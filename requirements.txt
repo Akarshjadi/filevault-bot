@@ -1,0 +1,7 @@
+# FileVault Bot — Python Dependencies
+# Pinned for Railway deployment
+
+python-telegram-bot==21.10
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+python-dotenv==1.1.0
