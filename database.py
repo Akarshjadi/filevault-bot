@@ -22,7 +22,18 @@ DATABASE_URL = os.getenv(
 )
 
 # Create async engine — reduced pool for Railway free tier
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=2, max_overflow=3)
+# SSL required for Supabase connections
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=2,
+    max_overflow=3,
+    connect_args={
+        "ssl": "require",
+        "timeout": 30,
+        "command_timeout": 30,
+    },
+)
 
 # Session factory
 async_session_factory = async_sessionmaker(
