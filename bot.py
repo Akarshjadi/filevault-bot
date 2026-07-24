@@ -111,8 +111,20 @@ async def main():
     logger.info("📋 Registered commands: 25")
     logger.info("🗄️  Database: PostgreSQL via Supabase")
 
-    # Start polling
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Start polling — use initialize + start + idle pattern for async context
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Keep running until interrupted
+    try:
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Shutting down...")
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 
 if __name__ == "__main__":
