@@ -62,28 +62,31 @@ async def init_db():
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Ensure indexes exist
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_files_vault_id ON files(vault_id);
-            CREATE INDEX IF NOT EXISTS idx_files_sender ON files(sender_user_id);
-            CREATE INDEX IF NOT EXISTS idx_files_unique_id ON files(telegram_file_unique_id);
-        """))
+        # Ensure indexes exist — one statement per execute() for Supabase pooler compatibility
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_files_vault_id ON files(vault_id)",
+            "CREATE INDEX IF NOT EXISTS idx_files_sender ON files(sender_user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_files_unique_id ON files(telegram_file_unique_id)",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass
         # GIN index for tag array search
         try:
-            await conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_files_tags ON files USING GIN (tags);
-            """))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_files_tags ON files USING GIN (tags)"))
         except Exception:
             pass  # May fail if not PostgreSQL
-        # Audit log indexes
-        try:
-            await conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
-                CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
-                CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at);
-            """))
-        except Exception:
-            pass
+        # Audit log indexes — one statement per execute()
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at)",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass
     print("✅ Database tables and indexes created.")
 
     # Create storage directory if needed
