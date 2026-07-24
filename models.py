@@ -18,10 +18,10 @@ class Base(DeclarativeBase):
 
 
 class UserRole(str, PyEnum):
-    ADMIN = "admin"
-    WHITELISTED = "whitelisted"
-    BLOCKED = "blocked"
-    PENDING = "pending"
+    ADMIN = "ADMIN"
+    WHITELISTED = "WHITELISTED"
+    BLOCKED = "BLOCKED"
+    PENDING = "PENDING"
 
 
 class FileType(str, PyEnum):
