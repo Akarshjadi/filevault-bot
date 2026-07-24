@@ -48,16 +48,10 @@ from callbacks import handle_callback
 from database import init_db, close_db
 
 
-def main():
+async def main():
     """Initialize database, create application, and start the bot."""
-    import asyncio
-
-    async def async_init():
-        logger.info("Initializing database...")
-        await init_db()
-
-    # Run async DB init
-    asyncio.run(async_init())
+    logger.info("Initializing database...")
+    await init_db()
 
     logger.info("Creating bot application...")
     app = Application.builder().token(BOT_TOKEN).build()
@@ -117,9 +111,9 @@ def main():
     logger.info("📋 Registered commands: 25")
     logger.info("🗄️  Database: PostgreSQL via Supabase")
 
-    # Start polling (this is a blocking synchronous call in PTB v21.x)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Start polling
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
