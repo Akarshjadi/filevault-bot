@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 
 from utils import ensure_user, DbSession, map_telegram_file_type, format_file_size, log_audit, escape_markdown
 from models import Vault, File, FileType, PendingFile, User, UserRole
+from storage import is_configured as r2_is_configured, upload_file_bytes, generate_download_link
 
 # Storage path for local file copies (optional fallback)
 STORAGE_BASE = os.getenv("STORAGE_BASE", "./vault_storage")
@@ -318,6 +319,23 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
         source_chat = pending.staging_message_id or pending.chat_id
         source_msg = pending.staging_message_id or pending.message_id
 
+        # Upload to R2 if configured
+        cloud_key = None
+        if r2_is_configured():
+            try:
+                # Download file bytes from Telegram
+                tg_file = await context.bot.get_file(pending.telegram_file_id)
+                file_bytes = await tg_file.download_as_bytearray()
+                
+                # Upload to R2
+                cloud_key = upload_file_bytes(
+                    bytes(file_bytes),
+                    pending.telegram_file_unique_id,
+                    pending.file_name or f"{pending.file_type.value}_{pending.telegram_file_unique_id[:8]}"
+                )
+            except Exception:
+                pass  # Non-critical — vault copy still works without R2
+
         try:
             copied_msg = await context.bot.copy_message(
                 chat_id=vault.telegram_group_id,
@@ -336,6 +354,7 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
         file_record = File(
             telegram_file_id=pending.telegram_file_id,
             telegram_file_unique_id=pending.telegram_file_unique_id,
+            cloud_key=cloud_key,
             vault_message_id=copied_msg.message_id,
             vault_id=vault.vault_id,
             sender_user_id=pending.sender_user_id,

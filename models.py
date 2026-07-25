@@ -87,6 +87,7 @@ class PendingFile(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     staging_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cloud_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -105,6 +106,7 @@ class File(Base):
     telegram_file_unique_id: Mapped[str] = mapped_column(
         Text, nullable=False, unique=True, index=True
     )
+    cloud_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     vault_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     vault_id: Mapped[int] = mapped_column(
