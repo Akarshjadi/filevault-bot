@@ -1,12 +1,10 @@
 """
-Cloudflare R2 Storage Module
-Provides async/thread-safe S3-compatible storage using boto3 with multipart uploads and retry logic.
+Cloudflare R2 Storage Module — DPDP Compliant
+Dual-bucket storage: adult files in 'approved/', minor files in 'minors-encrypted/'
 """
 import os
-import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
@@ -16,7 +14,8 @@ load_dotenv()
 
 # R2 Configuration
 S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "")
+R2_MAIN_BUCKET = os.getenv("R2_MAIN_BUCKET", "filevault-approved")
+R2_MINORS_BUCKET = os.getenv("R2_MINORS_BUCKET", "filevault-minors-encrypted")
 S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID", "")
 S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
 
@@ -25,9 +24,9 @@ PART_SIZE = 8 * 1024 * 1024  # 8 MB parts
 MAX_CONCURRENT_PARTS = 4
 MAX_RETRIES = 3
 
-# Initialize S3 client (thread-safe for concurrent use)
+# Initialize S3 client (thread-safe)
 s3_client = None
-if all([S3_ENDPOINT_URL, S3_BUCKET_NAME, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]):
+if all([S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY]):
     s3_client = boto3.client(
         's3',
         endpoint_url=S3_ENDPOINT_URL,
@@ -47,30 +46,23 @@ def verify_connection() -> bool:
     if not is_configured():
         return False
     try:
-        s3_client.head_bucket(Bucket=S3_BUCKET_NAME)
+        s3_client.head_bucket(Bucket=R2_MAIN_BUCKET)
         return True
     except (ClientError, BotoCoreError):
         return False
 
 
-def _calculate_etag(file_bytes: bytes) -> str:
-    """Calculate MD5 hash for deduplication."""
-    return hashlib.md5(file_bytes).hexdigest()
-
-
-def upload_file_bytes(file_bytes: bytes, file_unique_id: str, original_filename: str) -> str:
+def upload_file(file_bytes: bytes, cloud_key: str, is_minor: bool = False) -> str:
     """
-    Upload file bytes to R2 storage.
-    
-    Uses multipart upload for files > PART_SIZE.
+    Upload file to R2 with appropriate bucket based on minor status.
     
     Args:
         file_bytes: Raw file data
-        file_unique_id: Telegram file unique ID
-        original_filename: Original filename from user
+        cloud_key: Relative path within bucket
+        is_minor: If True, uses minors-encrypted bucket
     
     Returns:
-        str: The cloud key path where file was stored
+        str: Full S3 key
     
     Raises:
         RuntimeError: If upload fails
@@ -78,16 +70,15 @@ def upload_file_bytes(file_bytes: bytes, file_unique_id: str, original_filename:
     if not is_configured():
         raise RuntimeError("R2 storage not configured")
     
-    safe_filename = os.path.basename(original_filename)
-    cloud_key = f"approved/{file_unique_id}/{safe_filename}"
+    bucket = R2_MINORS_BUCKET if is_minor else R2_MAIN_BUCKET
     file_size = len(file_bytes)
     
     try:
         if file_size > PART_SIZE:
-            _multipart_upload(cloud_key, file_bytes)
+            _multipart_upload(bucket, cloud_key, file_bytes)
         else:
             s3_client.put_object(
-                Bucket=S3_BUCKET_NAME,
+                Bucket=bucket,
                 Key=cloud_key,
                 Body=file_bytes,
                 ContentType='application/octet-stream',
@@ -97,12 +88,12 @@ def upload_file_bytes(file_bytes: bytes, file_unique_id: str, original_filename:
         raise RuntimeError(f"Failed to upload file to R2: {e}")
 
 
-def _multipart_upload(cloud_key: str, file_bytes: bytes):
+def _multipart_upload(bucket: str, cloud_key: str, file_bytes: bytes):
     """Perform multipart upload for large files."""
     file_size = len(file_bytes)
     try:
         mpu = s3_client.create_multipart_upload(
-            Bucket=S3_BUCKET_NAME,
+            Bucket=bucket,
             Key=cloud_key,
         )
         upload_id = mpu['UploadId']
@@ -114,7 +105,7 @@ def _multipart_upload(cloud_key: str, file_bytes: bytes):
             for attempt in range(MAX_RETRIES):
                 try:
                     resp = s3_client.upload_part(
-                        Bucket=S3_BUCKET_NAME,
+                        Bucket=bucket,
                         Key=cloud_key,
                         PartNumber=part_num,
                         UploadId=upload_id,
@@ -128,7 +119,6 @@ def _multipart_upload(cloud_key: str, file_bytes: bytes):
                         raise
                     continue
         
-        # Split into parts
         chunk_size = PART_SIZE
         chunks = [file_bytes[i:i + chunk_size] for i in range(0, file_size, chunk_size)]
         
@@ -140,10 +130,9 @@ def _multipart_upload(cloud_key: str, file_bytes: bytes):
             for future in futures:
                 future.result()
         
-        # Complete multipart upload
         parts.sort(key=lambda x: x['PartNumber'])
         s3_client.complete_multipart_upload(
-            Bucket=S3_BUCKET_NAME,
+            Bucket=bucket,
             Key=cloud_key,
             UploadId=upload_id,
             MultipartUpload={'Parts': parts},
@@ -151,7 +140,7 @@ def _multipart_upload(cloud_key: str, file_bytes: bytes):
     except Exception as e:
         try:
             s3_client.abort_multipart_upload(
-                Bucket=S3_BUCKET_NAME,
+                Bucket=bucket,
                 Key=cloud_key,
                 UploadId=upload_id,
             )
@@ -160,13 +149,14 @@ def _multipart_upload(cloud_key: str, file_bytes: bytes):
         raise RuntimeError(f"Multipart upload failed: {e}")
 
 
-def generate_download_link(cloud_key: str, expires_in: int = 3600) -> str:
+def generate_download_link(cloud_key: str, is_minor: bool = False, expires_in: int = 3600) -> str:
     """
     Generate a presigned URL for downloading a file.
     
     Args:
         cloud_key: The R2 object key
-        expires_in: URL expiration time in seconds (default 1 hour)
+        is_minor: If True, uses minors-encrypted bucket
+        expires_in: URL expiration time in seconds
     
     Returns:
         str: Presigned download URL
@@ -177,11 +167,12 @@ def generate_download_link(cloud_key: str, expires_in: int = 3600) -> str:
     if not is_configured():
         raise RuntimeError("R2 storage not configured")
     
+    bucket = R2_MINORS_BUCKET if is_minor else R2_MAIN_BUCKET
     try:
         url = s3_client.generate_presigned_url(
             'get_object',
             Params={
-                'Bucket': S3_BUCKET_NAME,
+                'Bucket': bucket,
                 'Key': cloud_key,
             },
             ExpiresIn=expires_in,
@@ -191,27 +182,51 @@ def generate_download_link(cloud_key: str, expires_in: int = 3600) -> str:
         raise RuntimeError(f"Failed to generate download link: {e}")
 
 
-def delete_file(cloud_key: str) -> bool:
+def delete_file(cloud_key: str, is_minor: bool = False) -> bool:
     """
     Delete a file from R2 storage.
     
     Args:
         cloud_key: The R2 object key
+        is_minor: If True, uses minors-encrypted bucket
     
     Returns:
         bool: True if deleted successfully
-    
-    Raises:
-        RuntimeError: If deletion fails
     """
     if not is_configured():
         return False
     
+    bucket = R2_MINORS_BUCKET if is_minor else R2_MAIN_BUCKET
     try:
         s3_client.delete_object(
-            Bucket=S3_BUCKET_NAME,
+            Bucket=bucket,
             Key=cloud_key,
         )
         return True
-    except (ClientError, BotoCoreError) as e:
-        raise RuntimeError(f"Failed to delete file from R2: {e}")
+    except (ClientError, BotoCoreError):
+        return False
+
+
+def list_files(prefix: str, is_minor: bool = False) -> list[str]:
+    """
+    List files in R2 bucket with given prefix.
+    
+    Args:
+        prefix: Key prefix to filter
+        is_minor: If True, uses minors-encrypted bucket
+    
+    Returns:
+        list[str]: List of object keys
+    """
+    if not is_configured():
+        return []
+    
+    bucket = R2_MINORS_BUCKET if is_minor else R2_MAIN_BUCKET
+    try:
+        response = s3_client.list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix
+        )
+        return [obj['Key'] for obj in response.get('Contents', [])]
+    except (ClientError, BotoCoreError):
+        return []

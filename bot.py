@@ -1,130 +1,121 @@
 """
-FileVault Bot — Main Entry Point
-Multi-tier Telegram bot with PostgreSQL backend.
-Structured admin panel with approval flow and audit logging.
+FileVault Bot — DPDP Act 2023 Compliant
+Main entry point with migration runner and handler registration.
 """
-import os
 import asyncio
-import logging
+import sys
+from pathlib import Path
 
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters, ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
-
-# Bot token — must be set in environment
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set!")
-
-# Import command handlers
-from commands.core import (
-    start_command, help_command, status_command, whoami_command,
-)
-from commands.organize import (
-    list_command, search_command, tag_command, delete_command, rename_command,
-)
-from commands.admin import (
-    admin_command, admin_users_command, admin_approve_command, admin_deny_command,
-    admin_stats_command, admin_logs_command, admin_broadcast_command,
-    admin_setrole_command, admin_vault_command,
-    settings_command, setnotif_command, setvault_command,
-    adduser_command, removeuser_command,
-)
+from utils import ensure_user, DbSession, log_audit
+from database import init_db, async_engine
+from models import Base, User, UserRole
+from commands.core import start_command, help_command, about_command, my_data_command, forget_command
+from commands.admin import admin_command, admin_users_command, admin_approve_command, admin_deny_command, admin_stats_command, admin_logs_command, admin_broadcast_command, admin_setrole_command, admin_vault_command, settings_command, setnotif_command, setvault_command, adduser_command, removeuser_command
 from handlers import handle_file
-from callbacks import handle_callback
-from database import init_db, close_db
+from callbacks import handle_callback, process_person_name
+
+
+BOT_TOKEN = sys.argv[1] if len(sys.argv) > 1 else None
+if not BOT_TOKEN:
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    if not BOT_TOKEN:
+        print("ERROR: BOT_TOKEN not provided. Pass as argument or set in .env")
+        sys.exit(1)
+
+
+async def run_migrations():
+    """Run pending database migrations on startup."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import ProgrammingError
+    
+    migrations_dir = Path(__file__).parent / "migrations"
+    
+    async with async_engine.begin() as conn:
+        # Create migrations tracking table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version VARCHAR(50) PRIMARY KEY,
+                applied_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """))
+        
+        # Get applied migrations
+        result = await conn.execute(text("SELECT version FROM schema_migrations"))
+        applied = {row[0] for row in result.fetchall()}
+        
+        # Apply pending migrations
+        migration_files = sorted(migrations_dir.glob("*.sql"))
+        for migration_file in migration_files:
+            version = migration_file.stem
+            if version not in applied:
+                print(f"Applying migration: {version}")
+                sql = migration_file.read_text()
+                try:
+                    await conn.execute(text(sql))
+                    await conn.execute(
+                        text("INSERT INTO schema_migrations (version) VALUES (:v)"),
+                        {"v": version}
+                    )
+                    print(f"  ✓ Applied {version}")
+                except Exception as e:
+                    print(f"  ✗ Failed {version}: {e}")
+        
+        # Ensure encryption_keys has a master salt
+        result = await conn.execute(
+            text("SELECT COUNT(*) FROM encryption_keys WHERE key_name = 'master_salt'")
+        )
+        if result.scalar() == 0:
+            print("WARNING: master_salt not found in encryption_keys. Set ENCRYPTION_MASTER_SALT in .env")
+        
+        print("Migrations complete")
 
 
 async def main():
-    """Initialize database, create application, and start the bot."""
-    logger.info("Initializing database...")
-    await init_db()
-
-    logger.info("Creating bot application...")
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # ===== Tier 1: Core Commands =====
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("whoami", whoami_command))
-
-    # ===== Tier 2: Retrieval & Organization =====
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("search", search_command))
-    app.add_handler(CommandHandler("tag", tag_command))
-    app.add_handler(CommandHandler("delete", delete_command))
-    app.add_handler(CommandHandler("rename", rename_command))
-
-    # ===== Tier 3: Admin & Settings =====
-    # Admin panel commands
-    app.add_handler(CommandHandler("admin", admin_command))
-    app.add_handler(CommandHandler("admin_users", admin_users_command))
-    app.add_handler(CommandHandler("admin_approve", admin_approve_command))
-    app.add_handler(CommandHandler("admin_deny", admin_deny_command))
-    app.add_handler(CommandHandler("admin_stats", admin_stats_command))
-    app.add_handler(CommandHandler("admin_logs", admin_logs_command))
-    app.add_handler(CommandHandler("admin_broadcast", admin_broadcast_command))
-    app.add_handler(CommandHandler("admin_setrole", admin_setrole_command))
-    app.add_handler(CommandHandler("admin_vault", admin_vault_command))
-
-    # Legacy admin commands
-    app.add_handler(CommandHandler("settings", settings_command))
-    app.add_handler(CommandHandler("setnotif", setnotif_command))
-    app.add_handler(CommandHandler("setvault", setvault_command))
-    app.add_handler(CommandHandler("adduser", adduser_command))
-    app.add_handler(CommandHandler("removeuser", removeuser_command))
-
-    # ===== File Handler =====
-    app.add_handler(MessageHandler(
-        filters.Document.ALL | filters.PHOTO | filters.VIDEO |
-        filters.AUDIO | filters.VOICE | filters.ANIMATION,
-        handle_file
-    ))
-
-    # ===== Inline Callback Handler =====
-    app.add_handler(CallbackQueryHandler(handle_callback))
-
-    # ===== Error Handler =====
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Exception while handling update: {context.error}", exc_info=context.error)
-
-    app.add_error_handler(error_handler)
-
-    # Set up graceful shutdown
-    app.post_shutdown = close_db
-
-    logger.info("🤖 Bot is running!")
-    logger.info("📋 Registered commands: 25")
-    logger.info("🗄️  Database: PostgreSQL via Supabase")
-
-    # Start polling — use initialize + start + idle pattern for async context
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-
-    # Keep running until interrupted
-    try:
-        await asyncio.Event().wait()
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logger.info("Shutting down...")
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    # Run migrations
+    await run_migrations()
+    
+    # Build application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Register handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about_command))
+    application.add_handler(CommandHandler("my_data", my_data_command))
+    application.add_handler(CommandHandler("forget", forget_command))
+    
+    # Admin handlers
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("admin_users", admin_users_command))
+    application.add_handler(CommandHandler("admin_approve", admin_approve_command))
+    application.add_handler(CommandHandler("admin_deny", admin_deny_command))
+    application.add_handler(CommandHandler("admin_stats", admin_stats_command))
+    application.add_handler(CommandHandler("admin_logs", admin_logs_command))
+    application.add_handler(CommandHandler("admin_broadcast", admin_broadcast_command))
+    application.add_handler(CommandHandler("admin_setrole", admin_setrole_command))
+    application.add_handler(CommandHandler("admin_vault", admin_vault_command))
+    application.add_handler(CommandHandler("setnotif", setnotif_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("setvault", setvault_command))
+    application.add_handler(CommandHandler("adduser", adduser_command))
+    application.add_handler(CommandHandler("removeuser", removeuser_command))
+    
+    # File handler (handles all document/photo/video/audio/voice/animation)
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_file))
+    
+    # Callback handler (inline buttons)
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Person name reply handler (for admin approval flow)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_person_name))
+    
+    print("Bot started")
+    await application.run_polling()
 
 
 if __name__ == "__main__":

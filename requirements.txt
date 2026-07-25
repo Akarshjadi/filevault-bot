@@ -6,3 +6,5 @@ sqlalchemy[asyncio]==2.0.40
 asyncpg==0.30.0
 python-dotenv==1.1.0
 boto3==1.34.0
+cryptography==42.0.0
+Pillow==10.3.0

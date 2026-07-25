@@ -1,0 +1,45 @@
+"""
+DPDP-compliant encryption utilities for pseudonymization.
+Uses AES-256-GCM for field encryption and SHA-256 for hashing.
+"""
+import hashlib
+import os
+from dotenv import load_dotenv
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+load_dotenv()
+
+MASTER_SALT = bytes.fromhex(os.getenv("ENCRYPTION_MASTER_SALT", ""))
+
+
+def hash_person_name(name: str, salt: bytes = None) -> str:
+    """SHA-256 hash for indexing. Same name + salt = same hash."""
+    if salt is None:
+        salt = MASTER_SALT
+    return hashlib.sha256((name.lower().strip() + salt.hex()).encode()).hexdigest()
+
+
+def encrypt_field(plaintext: str, associated_data: str = None) -> tuple[str, str]:
+    """AES-256-GCM encrypt. Returns (ciphertext_hex, nonce_hex)."""
+    aesgcm = AESGCM(MASTER_SALT[:32])
+    nonce = os.urandom(12)
+    ad = associated_data.encode() if associated_data else b""
+    ct = aesgcm.encrypt(nonce, plaintext.encode(), ad)
+    return ct.hex(), nonce.hex()
+
+
+def decrypt_field(ciphertext_hex: str, nonce_hex: str, associated_data: str = None) -> str:
+    """AES-256-GCM decrypt."""
+    aesgcm = AESGCM(MASTER_SALT[:32])
+    ct = bytes.fromhex(ciphertext_hex)
+    nonce = bytes.fromhex(nonce_hex)
+    ad = associated_data.encode() if associated_data else b""
+    pt = aesgcm.decrypt(nonce, ct, ad)
+    return pt.decode()
+
+
+def is_minor_by_name(name: str) -> bool:
+    """Simple heuristic to flag potential minors (to be refined)."""
+    age_keywords = ["minor", "child", "kid", "juvenile", "underage"]
+    name_lower = name.lower()
+    return any(kw in name_lower for kw in age_keywords)
