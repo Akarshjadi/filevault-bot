@@ -79,13 +79,14 @@ class PendingFile(Base):
         BigInteger, ForeignKey("users.user_id", ondelete="CASCADE")
     )
     telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
-    telegram_file_unique_id: Mapped[str] = mapped_column(Text, nullable=False)
+    telegram_file_unique_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     file_type: Mapped[FileType] = mapped_column(Enum(FileType), nullable=False)
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger)
     file_name: Mapped[Optional[str]] = mapped_column(String(255))
     caption: Mapped[Optional[str]] = mapped_column(Text)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    staging_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -102,7 +103,7 @@ class File(Base):
     file_id_pk: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
     telegram_file_unique_id: Mapped[str] = mapped_column(
-        Text, nullable=False, index=True
+        Text, nullable=False, unique=True, index=True
     )
     vault_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

@@ -4,8 +4,7 @@ When a user sends a file, it goes to ALL admins for review first.
 Only after admin approval is the file stored in the shared vault.
 """
 import os
-from datetime import datetime
-
+from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
@@ -16,6 +15,14 @@ from models import Vault, File, FileType, PendingFile, User, UserRole
 
 # Storage path for local file copies (optional fallback)
 STORAGE_BASE = os.getenv("STORAGE_BASE", "./vault_storage")
+
+# In-memory rate limiting: user_id -> last submission timestamp
+user_last_submitted: dict[int, datetime] = {}
+
+# Configuration
+RATE_LIMIT_SECONDS = 30
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+STAGING_CHANNEL_ID = int(os.getenv("STAGING_CHANNEL_ID", "0"))
 
 
 async def get_admin_ids() -> list[int]:
@@ -40,6 +47,26 @@ async def get_shared_vault() -> Vault:
             session.add(vault)
             await session.flush()
         return vault
+
+
+async def check_duplicate_file(session, file_unique_id: str) -> bool:
+    """Check if file already exists in approved or pending state."""
+    result = await session.execute(
+        select(File).where(File.telegram_file_unique_id == file_unique_id)
+    )
+    if result.scalar_one_or_none():
+        return True
+
+    result = await session.execute(
+        select(PendingFile).where(
+            PendingFile.telegram_file_unique_id == file_unique_id,
+            PendingFile.status == "pending"
+        )
+    )
+    if result.scalar_one_or_none():
+        return True
+
+    return False
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,6 +105,25 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text("📥 Sending for admin review...")
 
+    # Rate limit check
+    user_id = user.id
+    now = datetime.now(timezone.utc)
+    if user_id in user_last_submitted:
+        elapsed = (now - user_last_submitted[user_id]).total_seconds()
+        if elapsed < RATE_LIMIT_SECONDS:
+            await status_msg.edit_text(
+                f"⚠️ Please wait {int(RATE_LIMIT_SECONDS - elapsed)}s before sending another file."
+            )
+            return
+
+    # File size check
+    file_size = file_obj.file_size or 0
+    if file_size > MAX_FILE_SIZE_BYTES:
+        await status_msg.edit_text(
+            f"⚠️ File size exceeds the {MAX_FILE_SIZE_BYTES // (1024*1024)}MB limit."
+        )
+        return
+
     try:
         file_name = None
         if file_type_str == "document" and hasattr(file_obj, 'file_name') and file_obj.file_name:
@@ -93,6 +139,28 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mapped_type = map_telegram_file_type(file_type_str)
         original_caption = update.message.caption or ""
 
+        # Duplicate check
+        async with DbSession() as session:
+            if await check_duplicate_file(session, file_obj.file_unique_id):
+                await status_msg.edit_text(
+                    "⚠️ This file has already been submitted or approved."
+                )
+                return
+
+        # Forward to staging channel if configured
+        staging_message_id = None
+        if STAGING_CHANNEL_ID != 0:
+            try:
+                staging_msg = await context.bot.copy_message(
+                    chat_id=STAGING_CHANNEL_ID,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=update.message.message_id,
+                )
+                staging_message_id = staging_msg.message_id
+            except Exception:
+                pass  # Staging channel not configured or failed
+
+        # Save as pending file in database
         async with DbSession() as session:
             pending = PendingFile(
                 sender_user_id=user.id,
@@ -104,6 +172,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=original_caption,
                 chat_id=update.effective_chat.id,
                 message_id=update.message.message_id,
+                staging_message_id=staging_message_id,
                 status="pending",
             )
             session.add(pending)
@@ -116,6 +185,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 details=f"File submitted for approval: {file_name} ({file_type_str})",
                 session=session,
             )
+
+        # Update rate limit timestamp
+        user_last_submitted[user_id] = datetime.now(timezone.utc)
 
         safe_first_name = escape_markdown(user.first_name or "")
         safe_username = escape_markdown(user.username or "") if user.username else ""
@@ -130,7 +202,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🆔 **User ID:** `{user.id}`\n"
             f"📄 **File:** {safe_file_name}\n"
             f"📁 **Type:** {file_type_str}\n"
-            f"💾 **Size:** {format_file_size(file_obj.file_size or 0)}\n"
+            f"💾 **Size:** {format_file_size(file_size)}\n"
             f"🔖 **Pending ID:** `{pending_id}`\n"
         )
         if safe_caption:
@@ -144,21 +216,26 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        # Send file to all admins for review
         admin_ids = await get_admin_ids()
         sent_to_admins = 0
         for admin_id in admin_ids:
             try:
+                # Use staging channel message if available, otherwise original
+                source_chat = STAGING_CHANNEL_ID if staging_message_id else update.effective_chat.id
+                source_msg = staging_message_id if staging_message_id else update.message.message_id
+
                 await context.bot.copy_message(
                     chat_id=admin_id,
-                    from_chat_id=update.effective_chat.id,
-                    message_id=update.message.message_id,
+                    from_chat_id=source_chat,
+                    message_id=source_msg,
                     caption=review_caption,
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=reply_markup,
                 )
                 sent_to_admins += 1
             except Exception:
-                pass
+                pass  # Admin may have blocked the bot
 
         if sent_to_admins == 0:
             await status_msg.edit_text(
@@ -237,11 +314,15 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
         if pending.file_name:
             meta_caption = f"📄 `{safe_file_name}`\n" + meta_caption
 
+        # Use staging channel if available, otherwise original source
+        source_chat = pending.staging_message_id or pending.chat_id
+        source_msg = pending.staging_message_id or pending.message_id
+
         try:
             copied_msg = await context.bot.copy_message(
                 chat_id=vault.telegram_group_id,
-                from_chat_id=pending.chat_id,
-                message_id=pending.message_id,
+                from_chat_id=source_chat,
+                message_id=source_msg,
                 caption=meta_caption,
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -271,7 +352,7 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
 
         pending.status = "approved"
         pending.reviewed_by = admin.id
-        pending.reviewed_at = datetime.now()
+        pending.reviewed_at = datetime.now(timezone.utc)
 
         await log_audit(
             user_id=admin.id,
@@ -336,7 +417,7 @@ async def reject_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         pending.status = "rejected"
         pending.reviewed_by = admin.id
-        pending.reviewed_at = datetime.now()
+        pending.reviewed_at = datetime.now(timezone.utc)
 
         await log_audit(
             user_id=admin.id,
