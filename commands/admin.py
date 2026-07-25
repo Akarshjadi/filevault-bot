@@ -11,7 +11,7 @@ from sqlalchemy import text, select
 
 from utils import (
     ensure_user, DbSession, is_admin, log_audit,
-    get_user_by_id, get_all_users, format_file_size,
+    get_user_by_id, get_all_users, format_file_size, escape_markdown,
 )
 from models import User, Vault, UserRole
 
@@ -98,9 +98,11 @@ async def admin_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_id, username, first_name, role, is_approved, approved_by, approved_at, last_seen, notif_enabled, created_at = u
         status_icon = "✅" if is_approved else "⏳" if role == "pending" else "❌" if role == "blocked" else "🛡️"
         last_seen_str = str(last_seen)[:10] if last_seen else "Never"
+        safe_first_name = escape_markdown(first_name or "Unknown")
+        safe_username = escape_markdown(username) if username else ""
         response += (
-            f"{status_icon} `{user_id}` — **{first_name or 'Unknown'}**"
-            f"{' (@' + username + ')' if username else ''}\n"
+            f"{status_icon} `{user_id}` — **{safe_first_name}**"
+            f"{' (@' + safe_username + ')' if username else ''}\n"
             f"   🔑 `{role.upper()}` | 🕐 Last: {last_seen_str}\n\n"
         )
 
@@ -565,10 +567,11 @@ async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         recent_files = result.fetchall()
 
+    safe_vault_name = escape_markdown(vault.name)
     text_msg = (
         f"🏛️ **Vault Info for User `{target_id}`**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📛 **Name:** {vault.name}\n"
+        f"📛 **Name:** {safe_vault_name}\n"
         f"🆔 **Vault ID:** `{vault.vault_id}`\n"
         f"🏠 **Group ID:** `{vault.telegram_group_id}`\n"
         f"📁 **Files:** {file_count}\n"
@@ -599,10 +602,12 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     notif_status = "Enabled ✅" if db_user and db_user.notifications_enabled else "Disabled ❌"
 
+    safe_username = escape_markdown(user.username or "")
+    safe_first_name = escape_markdown(user.first_name or "")
     settings_text = (
         f"⚙️ **Your Settings**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 **User:** @{user.username or user.first_name}\n"
+        f"👤 **User:** @{safe_username or safe_first_name}\n"
         f"🆔 **ID:** `{user.id}`\n"
         f"🔑 **Role:** `{db_user.role.value.upper() if db_user else 'PENDING'}`\n"
         f"🔔 **Notifications:** {notif_status}\n"
@@ -696,9 +701,10 @@ async def setvault_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session=session,
         )
 
+    safe_chat_title = escape_markdown(chat.title or "Unknown")
     await update.message.reply_text(
         f"✅ Vault successfully bound to this group!\n"
-        f"📛 Group: **{chat.title}**\n"
+        f"📛 Group: **{safe_chat_title}**\n"
         f"🆔 Chat ID: `{chat.id}`\n"
         f"💡 Now send me files in DM and I'll forward them here!",
         parse_mode=ParseMode.MARKDOWN

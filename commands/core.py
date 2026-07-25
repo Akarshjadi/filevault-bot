@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from sqlalchemy import select, text
 
-from utils import ensure_user, DbSession, format_file_size
+from utils import ensure_user, DbSession, format_file_size, escape_markdown
 from models import Vault
 
 
@@ -30,8 +30,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    safe_name = escape_markdown(user.username or user.first_name or "")
     welcome_text = (
-        f"👋 Welcome to **FileVault Bot**, @{user.username or user.first_name}!\n\n"
+        f"👋 Welcome to **FileVault Bot**, @{safe_name}!\n\n"
         f"📦 **What I do:** I store and organize your files securely.\n"
         f"Just send me any file and I'll save it in your private vault.\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"

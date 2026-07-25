@@ -67,6 +67,8 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_files_vault_id ON files(vault_id)",
             "CREATE INDEX IF NOT EXISTS idx_files_sender ON files(sender_user_id)",
             "CREATE INDEX IF NOT EXISTS idx_files_unique_id ON files(telegram_file_unique_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pending_files_sender ON pending_files(sender_user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pending_files_status ON pending_files(status)",
         ]:
             try:
                 await conn.execute(text(stmt))

@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from sqlalchemy import text, select
 
-from utils import ensure_user, DbSession, format_file_size, log_audit
+from utils import ensure_user, DbSession, format_file_size, log_audit, escape_markdown
 from models import File, Vault
 
 
@@ -60,10 +60,12 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for file in files:
         file_id, file_name, tags, file_type, saved_at, size = file
         tag_str = ""
+        safe_file_name = escape_markdown(file_name or "Unknown")
         if tags and len(tags) > 0:
-            tag_str = f" 🏷️ `{', '.join(tags[:3])}`"
+            safe_tags = [escape_markdown(t) for t in tags[:3]]
+            tag_str = f" 🏷️ `{', '.join(safe_tags)}`"
         response += (
-            f"`{file_id}.` **{file_name or 'Unknown'}**\n"
+            f"`{file_id}.` **{safe_file_name}**\n"
             f"   📁 {file_type} | 💾 {format_file_size(size or 0)}\n"
             f"   🆔 `{file_id}` | 🕐 {str(saved_at)[:10]}{tag_str}\n\n"
         )
@@ -86,7 +88,9 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    keyword = ' '.join(context.args).lower()
+    keyword = ' '.join(context.args)
+    safe_keyword = escape_markdown(keyword)
+    keyword_lower = keyword.lower()
     user = update.effective_user
 
     async with DbSession() as session:
@@ -103,28 +107,31 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ORDER BY f.saved_at DESC
                 LIMIT 10
             """),
-            {"uid": user.id, "kw": f"%{keyword}%"}
+            {"uid": user.id, "kw": f"%{keyword_lower}%"}
         )
         files = result.fetchall()
 
     if not files:
         await update.message.reply_text(
-            f"🔍 No files found matching: **{keyword}**",
+            f"🔍 No files found matching: **{safe_keyword}**",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
-    response = f"🔍 **Search Results** for \"{keyword}\"\n━━━━━━━━━━━━━━━━━━━━━\n"
+    response = f"🔍 **Search Results** for \"{safe_keyword}\"\n━━━━━━━━━━━━━━━━━━━━━\n"
 
     for file in files:
         file_id, file_name, tags, file_type, saved_at, caption = file
-        response += f"`{file_id}.` **{file_name or 'Unknown'}**\n"
+        safe_file_name = escape_markdown(file_name or "Unknown")
+        response += f"`{file_id}.` **{safe_file_name}**\n"
         response += f"   📁 {file_type} | 🕐 {str(saved_at)[:10]}\n"
         if tags and len(tags) > 0:
-            response += f"   🏷️ Tags: `{', '.join(tags[:5])}`\n"
+            safe_tags = [escape_markdown(t) for t in tags[:5]]
+            response += f"   🏷️ Tags: `{', '.join(safe_tags)}`\n"
         if caption:
             caption_preview = caption[:80] + "..." if len(caption) > 80 else caption
-            response += f"   💬 {caption_preview}\n"
+            safe_caption = escape_markdown(caption_preview)
+            response += f"   💬 {safe_caption}\n"
         response += "\n"
 
     await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
@@ -183,9 +190,10 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session=session,
         )
 
+    safe_tags = [escape_markdown(t) for t in updated_tags]
     await update.message.reply_text(
         f"✅ Tags updated for file {file_id_pk}.\n"
-        f"🏷️ Current tags: `{', '.join(updated_tags)}`",
+        f"🏷️ Current tags: `{', '.join(safe_tags)}`",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -260,8 +268,9 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"fid": file_id_pk}
         )
 
+    safe_file_name = escape_markdown(file_name or "Unknown")
     await update.message.reply_text(
-        f"🗑️ File **{file_name or 'Unknown'}** (ID: {file_id_pk}) has been permanently deleted.",
+        f"🗑️ File **{safe_file_name}** (ID: {file_id_pk}) has been permanently deleted.",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -309,7 +318,8 @@ async def rename_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session=session,
         )
 
+    safe_new_name = escape_markdown(new_name)
     await update.message.reply_text(
-        f"✅ File renamed to: **{new_name}**",
+        f"✅ File renamed to: **{safe_new_name}**",
         parse_mode=ParseMode.MARKDOWN
     )

@@ -181,3 +181,33 @@ def format_file_size(size_bytes: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024.0
     return f"{size:.1f} TB"
+
+
+def escape_markdown(text: str) -> str:
+    """Escape special Markdown characters in user-provided text.
+    
+    Telegram's MarkdownV2 requires escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    For regular Markdown (ParseMode.MARKDOWN), the main offenders are: _ * ` [
+    This function handles both by escaping the most common problematic characters.
+    """
+    # Must escape backslash and backtick first to avoid double-escaping
+    text = text.replace('\\', '\\\\')
+    text = text.replace('`', '\\`')
+    text = text.replace('*', '\\*')
+    text = text.replace('_', '\\_')
+    text = text.replace('[', '\\[')
+    text = text.replace(']', '\\]')
+    text = text.replace('(', '\\(')
+    text = text.replace(')', '\\)')
+    text = text.replace('~', '\\~')
+    text = text.replace('>', '\\>')
+    text = text.replace('#', '\\#')
+    text = text.replace('+', '\\+')
+    text = text.replace('-', '\\-')
+    text = text.replace('=', '\\=')
+    text = text.replace('|', '\\|')
+    text = text.replace('{', '\\{')
+    text = text.replace('}', '\\}')
+    text = text.replace('.', '\\.')
+    text = text.replace('!', '\\!')
+    return text

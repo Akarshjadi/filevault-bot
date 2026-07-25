@@ -51,6 +51,7 @@ class User(Base):
 
     owned_vaults: Mapped[List["Vault"]] = relationship(back_populates="owner")
     uploaded_files: Mapped[List["File"]] = relationship(back_populates="sender")
+    pending_files: Mapped[List["PendingFile"]] = relationship(back_populates="sender")
 
 
 class Vault(Base):
@@ -72,6 +73,32 @@ class Vault(Base):
     files: Mapped[List["File"]] = relationship(
         back_populates="vault", cascade="all, delete-orphan"
     )
+
+
+class PendingFile(Base):
+    """Files awaiting admin approval before being stored in the vault."""
+    __tablename__ = "pending_files"
+
+    pending_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sender_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.user_id", ondelete="CASCADE")
+    )
+    telegram_file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    telegram_file_unique_id: Mapped[str] = mapped_column(Text, nullable=False)
+    file_type: Mapped[FileType] = mapped_column(Enum(FileType), nullable=False)
+    file_size: Mapped[Optional[int]] = mapped_column(BigInteger)
+    file_name: Mapped[Optional[str]] = mapped_column(String(255))
+    caption: Mapped[Optional[str]] = mapped_column(Text)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, approved, rejected
+    reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    sender: Mapped["User"] = relationship(back_populates="pending_files")
 
 
 class File(Base):
