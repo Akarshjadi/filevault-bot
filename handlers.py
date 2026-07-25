@@ -227,10 +227,9 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        # Build caption for vault
+        # Build caption for vault (no user ID visible)
         safe_file_name = escape_markdown(pending.file_name or "Unknown")
         meta_caption = (
-            f"📤 **User {pending.sender_user_id}**\n"
             f"📁 `{pending.file_type.value}` | 💾 {format_file_size(pending.file_size or 0)}"
         )
         if pending.caption:
