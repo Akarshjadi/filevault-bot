@@ -1,7 +1,7 @@
 """
 File Handler — Core save flow with admin approval gate.
 When a user sends a file, it goes to ALL admins for review first.
-Only after admin approval is the file stored in the vault.
+Only after admin approval is the file stored in the shared vault.
 """
 import os
 from datetime import datetime
@@ -27,6 +27,21 @@ async def get_admin_ids() -> list[int]:
         return [row[0] for row in result.fetchall()]
 
 
+async def get_shared_vault() -> Vault:
+    """Get the shared vault, creating it if needed."""
+    async with DbSession() as session:
+        result = await session.execute(select(Vault))
+        vault = result.scalar_one_or_none()
+        if not vault:
+            vault = Vault(
+                telegram_group_id=0,
+                name="Shared Vault",
+            )
+            session.add(vault)
+            await session.flush()
+        return vault
+
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming files — send to admin for review, not directly to vault."""
     if not await ensure_user(update, context):
@@ -42,7 +57,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_obj = update.message.document
         file_type_str = "document"
     elif update.message.photo:
-        file_obj = update.message.photo[-1]  # Highest resolution
+        file_obj = update.message.photo[-1]
         file_type_str = "photo"
     elif update.message.video:
         file_obj = update.message.video
@@ -61,11 +76,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Unsupported file type.")
         return
 
-    # Send "processing" message
     status_msg = await update.message.reply_text("📥 Sending for admin review...")
 
     try:
-        # Determine filename
         file_name = None
         if file_type_str == "document" and hasattr(file_obj, 'file_name') and file_obj.file_name:
             file_name = file_obj.file_name
@@ -77,11 +90,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ext = ext_map.get(file_type_str, "")
             file_name = f"{file_type_str}_{file_obj.file_unique_id[:8]}{ext}"
 
-        # Map to our FileType enum
         mapped_type = map_telegram_file_type(file_type_str)
         original_caption = update.message.caption or ""
 
-        # Save as pending file in database
         async with DbSession() as session:
             pending = PendingFile(
                 sender_user_id=user.id,
@@ -99,7 +110,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await session.flush()
             pending_id = pending.pending_id
 
-            # Log audit
             await log_audit(
                 user_id=user.id,
                 action="file_pending_approval",
@@ -107,7 +117,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session=session,
             )
 
-        # Build review message for admins
         safe_first_name = escape_markdown(user.first_name or "")
         safe_username = escape_markdown(user.username or "") if user.username else ""
         safe_file_name = escape_markdown(file_name or "Unknown")
@@ -127,7 +136,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if safe_caption:
             review_caption += f"💬 **Caption:** {safe_caption}\n"
 
-        # Approve/Reject buttons
         keyboard = [
             [
                 InlineKeyboardButton("✅ Approve", callback_data=f"approve_file_{pending_id}"),
@@ -136,7 +144,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Send the file to ALL admins for review
         admin_ids = await get_admin_ids()
         sent_to_admins = 0
         for admin_id in admin_ids:
@@ -151,16 +158,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 sent_to_admins += 1
             except Exception:
-                pass  # Admin may have blocked the bot
+                pass
 
         if sent_to_admins == 0:
-            # No admins available — notify user
             await status_msg.edit_text(
                 "⚠️ **No admins are available to review your file.**\n\n"
                 "Please try again later or contact the bot administrator.",
                 parse_mode=ParseMode.MARKDOWN
             )
-            # Clean up pending record
             async with DbSession() as session:
                 await session.execute(
                     text("DELETE FROM pending_files WHERE pending_id = :pid"),
@@ -168,7 +173,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # Notify the user
         await status_msg.edit_text(
             f"✅ **File sent for admin review!**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -188,12 +192,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pending_id: int):
-    """Approve a pending file — copy it to the user's vault."""
+    """Approve a pending file — copy it to the shared vault."""
     admin = update.effective_user
     query = update.callback_query
 
     async with DbSession() as session:
-        # Get pending file record
         result = await session.execute(
             select(PendingFile).where(PendingFile.pending_id == pending_id)
         )
@@ -213,21 +216,17 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        # Find user's vault
-        result = await session.execute(
-            select(Vault).where(Vault.owner_user_id == pending.sender_user_id)
-        )
-        vault = result.scalar_one_or_none()
+        # Get shared vault
+        vault = await get_shared_vault()
 
-        if not vault:
+        if not vault or vault.telegram_group_id == 0:
             await query.edit_message_text(
-                "⚠️ **User has no vault configured!**\n\n"
-                "An admin needs to set up a vault for this user first using `/setvault`.",
+                "⚠️ **Shared vault not set up yet!**\n\n"
+                "An admin needs to run `/setvault` in a group first.",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
 
-        # Build caption for vault (no user ID visible)
         safe_file_name = escape_markdown(pending.file_name or "Unknown")
         meta_caption = (
             f"📁 `{pending.file_type.value}` | 💾 {format_file_size(pending.file_size or 0)}"
@@ -238,7 +237,6 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
         if pending.file_name:
             meta_caption = f"📄 `{safe_file_name}`\n" + meta_caption
 
-        # Copy the file to the vault group
         try:
             copied_msg = await context.bot.copy_message(
                 chat_id=vault.telegram_group_id,
@@ -254,7 +252,6 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        # Create file record
         file_record = File(
             telegram_file_id=pending.telegram_file_id,
             telegram_file_unique_id=pending.telegram_file_unique_id,
@@ -272,12 +269,10 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
         await session.flush()
         file_record_id = file_record.file_id_pk
 
-        # Update pending record
         pending.status = "approved"
         pending.reviewed_by = admin.id
         pending.reviewed_at = datetime.now()
 
-        # Log audit
         await log_audit(
             user_id=admin.id,
             action="approve_file",
@@ -286,7 +281,6 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
             session=session,
         )
 
-    # Notify the user who submitted the file
     try:
         safe_file_name = escape_markdown(pending.file_name or "Unknown")
         await context.bot.send_message(
@@ -296,22 +290,21 @@ async def approve_pending_file(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📄 **File:** {safe_file_name}\n"
                 f"🔗 **ID:** `{file_record_id}`\n\n"
-                f"Your file is now stored in your vault.\n"
+                f"Your file is now stored in the shared vault.\n"
                 f"Use `/list` to browse your files.",
             ),
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception:
-        pass  # User may have blocked the bot
+        pass
 
-    # Update the admin's review message
     await query.edit_message_text(
         f"✅ **File Approved!**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 **File:** {safe_file_name}\n"
         f"👤 **User:** `{pending.sender_user_id}`\n"
         f"🔗 **File ID:** `{file_record_id}`\n\n"
-        f"The file has been saved to the vault and the user has been notified.",
+        f"The file has been saved to the shared vault.",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -322,7 +315,6 @@ async def reject_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
 
     async with DbSession() as session:
-        # Get pending file record
         result = await session.execute(
             select(PendingFile).where(PendingFile.pending_id == pending_id)
         )
@@ -342,12 +334,10 @@ async def reject_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return
 
-        # Update pending record
         pending.status = "rejected"
         pending.reviewed_by = admin.id
         pending.reviewed_at = datetime.now()
 
-        # Log audit
         await log_audit(
             user_id=admin.id,
             action="reject_file",
@@ -355,7 +345,6 @@ async def reject_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             session=session,
         )
 
-    # Notify the user who submitted the file
     try:
         safe_file_name = escape_markdown(pending.file_name or "Unknown")
         await context.bot.send_message(
@@ -370,9 +359,8 @@ async def reject_pending_file(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception:
-        pass  # User may have blocked the bot
+        pass
 
-    # Update the admin's review message
     safe_file_name = escape_markdown(pending.file_name or "Unknown")
     await query.edit_message_text(
         f"❌ **File Rejected**\n"

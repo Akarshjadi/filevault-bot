@@ -513,7 +513,7 @@ async def admin_setrole_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View a user's vault information."""
+    """View the shared vault information."""
     if not await ensure_user(update, context):
         return
 
@@ -521,28 +521,13 @@ async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ Only admins can use this command.")
         return
 
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/admin vault <user_id>`\nExample: `/admin vault 123456789`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-
-    try:
-        target_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("⚠️ Invalid user ID. Must be a number.")
-        return
-
     async with DbSession() as session:
-        result = await session.execute(
-            select(Vault).where(Vault.owner_user_id == target_id)
-        )
+        result = await session.execute(select(Vault))
         vault = result.scalar_one_or_none()
 
         if not vault:
             await update.message.reply_text(
-                f"⚠️ User `{target_id}` has no vault configured.",
+                "⚠️ No vault configured yet. Use `/setvault` in a group.",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
@@ -559,9 +544,9 @@ async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get recent files
         result = await session.execute(
             text("""
-                SELECT file_id_pk, file_name, file_type, saved_at
+                SELECT file_id_pk, file_name, file_type, saved_at, sender_user_id
                 FROM files WHERE vault_id = :vid
-                ORDER BY saved_at DESC LIMIT 5
+                ORDER BY saved_at DESC LIMIT 10
             """),
             {"vid": vault.vault_id}
         )
@@ -569,7 +554,7 @@ async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     safe_vault_name = escape_markdown(vault.name)
     text_msg = (
-        f"🏛️ **Vault Info for User `{target_id}`**\n"
+        f"🏛️ **Shared Vault Info**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📛 **Name:** {safe_vault_name}\n"
         f"🆔 **Vault ID:** `{vault.vault_id}`\n"
@@ -581,8 +566,8 @@ async def admin_vault_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if recent_files:
         text_msg += "**Recent Files:**\n"
-        for fid, fname, ftype, saved_at in recent_files:
-            text_msg += f"• `{fid}` {fname or 'Unknown'} ({ftype}) — {str(saved_at)[:10]}\n"
+        for fid, fname, ftype, saved_at, sender_id in recent_files:
+            text_msg += f"• `{fid}` {fname or 'Unknown'} ({ftype}) — by `{sender_id}` — {str(saved_at)[:10]}\n"
 
     await update.message.reply_text(text_msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -647,7 +632,7 @@ async def setnotif_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setvault_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bind a new group as vault (admin-only). Run this inside the target group."""
+    """Set the shared vault group (admin-only). Run this inside the target group."""
     if not await ensure_user(update, context):
         return
 
@@ -666,30 +651,19 @@ async def setvault_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     async with DbSession() as session:
-        # Check if this group is already bound to someone else
-        result = await session.execute(
-            select(Vault).where(Vault.telegram_group_id == chat.id)
-        )
-        existing = result.scalar_one_or_none()
-
-        if existing and existing.owner_user_id != user_id:
-            await update.message.reply_text(
-                "⚠️ This group is already bound as a vault by another user."
-            )
-            return
-
-        if existing:
-            # Update owner
-            await session.execute(
-                text("UPDATE vaults SET owner_user_id = :uid WHERE telegram_group_id = :gid"),
-                {"uid": user_id, "gid": chat.id}
-            )
+        # Get or create the single shared vault
+        result = await session.execute(select(Vault))
+        vault = result.scalar_one_or_none()
+        
+        if vault:
+            # Update existing vault
+            vault.telegram_group_id = chat.id
+            vault.name = chat.title or "Shared Vault"
         else:
-            # Create new vault binding
+            # Create shared vault
             vault = Vault(
                 telegram_group_id=chat.id,
-                owner_user_id=user_id,
-                name=chat.title or "Personal Vault"
+                name=chat.title or "Shared Vault",
             )
             session.add(vault)
 
@@ -697,16 +671,16 @@ async def setvault_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_audit(
             user_id=user_id,
             action="set_vault",
-            details=f"Bound vault to group {chat.id} ({chat.title})",
+            details=f"Set shared vault to group {chat.id} ({chat.title})",
             session=session,
         )
 
     safe_chat_title = escape_markdown(chat.title or "Unknown")
     await update.message.reply_text(
-        f"✅ Vault successfully bound to this group!\n"
+        f"✅ Shared vault set to this group!\n"
         f"📛 Group: **{safe_chat_title}**\n"
         f"🆔 Chat ID: `{chat.id}`\n"
-        f"💡 Now send me files in DM and I'll forward them here!",
+        f"💡 All approved files will be sent here.",
         parse_mode=ParseMode.MARKDOWN
     )
 

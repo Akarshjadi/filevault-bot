@@ -49,7 +49,6 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    owned_vaults: Mapped[List["Vault"]] = relationship(back_populates="owner")
     uploaded_files: Mapped[List["File"]] = relationship(back_populates="sender")
     pending_files: Mapped[List["PendingFile"]] = relationship(back_populates="sender")
 
@@ -61,15 +60,11 @@ class Vault(Base):
     telegram_group_id: Mapped[int] = mapped_column(
         BigInteger, unique=True, nullable=False
     )
-    owner_user_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("users.user_id", ondelete="CASCADE")
-    )
-    name: Mapped[str] = mapped_column(String(100), default="Personal Vault")
+    name: Mapped[str] = mapped_column(String(100), default="Shared Vault")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    owner: Mapped["User"] = relationship(back_populates="owned_vaults")
     files: Mapped[List["File"]] = relationship(
         back_populates="vault", cascade="all, delete-orphan"
     )
@@ -91,7 +86,7 @@ class PendingFile(Base):
     caption: Mapped[Optional[str]] = mapped_column(Text)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, approved, rejected
+    status: Mapped[str] = mapped_column(String(20), default="pending")
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
