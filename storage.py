@@ -1,8 +1,13 @@
 """
 Cloudflare R2 Storage Module
-Provides async/thread-safe S3-compatible storage using boto3.
+Provides async/thread-safe S3-compatible storage using boto3 with multipart uploads and retry logic.
 """
 import os
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
+
 import boto3
 from botocore.exceptions import ClientError, BotoCoreError
 from dotenv import load_dotenv
@@ -14,6 +19,11 @@ S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "")
 S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID", "")
 S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
+
+# Upload tuning
+PART_SIZE = 8 * 1024 * 1024  # 8 MB parts
+MAX_CONCURRENT_PARTS = 4
+MAX_RETRIES = 3
 
 # Initialize S3 client (thread-safe for concurrent use)
 s3_client = None
@@ -37,15 +47,22 @@ def verify_connection() -> bool:
     if not is_configured():
         return False
     try:
-        s3_client.list_objects_v2(Bucket=S3_BUCKET_NAME, MaxKeys=1)
+        s3_client.head_bucket(Bucket=S3_BUCKET_NAME)
         return True
     except (ClientError, BotoCoreError):
         return False
 
 
+def _calculate_etag(file_bytes: bytes) -> str:
+    """Calculate MD5 hash for deduplication."""
+    return hashlib.md5(file_bytes).hexdigest()
+
+
 def upload_file_bytes(file_bytes: bytes, file_unique_id: str, original_filename: str) -> str:
     """
     Upload file bytes to R2 storage.
+    
+    Uses multipart upload for files > PART_SIZE.
     
     Args:
         file_bytes: Raw file data
@@ -61,20 +78,86 @@ def upload_file_bytes(file_bytes: bytes, file_unique_id: str, original_filename:
     if not is_configured():
         raise RuntimeError("R2 storage not configured")
     
-    # Sanitize filename for use as path component
     safe_filename = os.path.basename(original_filename)
     cloud_key = f"approved/{file_unique_id}/{safe_filename}"
+    file_size = len(file_bytes)
     
     try:
-        s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=cloud_key,
-            Body=file_bytes,
-            ContentType='application/octet-stream',
-        )
+        if file_size > PART_SIZE:
+            _multipart_upload(cloud_key, file_bytes)
+        else:
+            s3_client.put_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=cloud_key,
+                Body=file_bytes,
+                ContentType='application/octet-stream',
+            )
         return cloud_key
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to upload file to R2: {e}")
+
+
+def _multipart_upload(cloud_key: str, file_bytes: bytes):
+    """Perform multipart upload for large files."""
+    file_size = len(file_bytes)
+    try:
+        mpu = s3_client.create_multipart_upload(
+            Bucket=S3_BUCKET_NAME,
+            Key=cloud_key,
+        )
+        upload_id = mpu['UploadId']
+        parts = []
+        part_number = 1
+        lock = threading.Lock()
+        
+        def upload_part(part_data, part_num):
+            for attempt in range(MAX_RETRIES):
+                try:
+                    resp = s3_client.upload_part(
+                        Bucket=S3_BUCKET_NAME,
+                        Key=cloud_key,
+                        PartNumber=part_num,
+                        UploadId=upload_id,
+                        Body=part_data,
+                    )
+                    with lock:
+                        parts.append({'PartNumber': part_num, 'ETag': resp['ETag']})
+                    return
+                except (ClientError, BotoCoreError):
+                    if attempt == MAX_RETRIES - 1:
+                        raise
+                    continue
+        
+        # Split into parts
+        chunk_size = PART_SIZE
+        chunks = [file_bytes[i:i + chunk_size] for i in range(0, file_size, chunk_size)]
+        
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PARTS) as executor:
+            futures = [
+                executor.submit(upload_part, chunk, i + 1)
+                for i, chunk in enumerate(chunks)
+            ]
+            for future in futures:
+                future.result()
+        
+        # Complete multipart upload
+        parts.sort(key=lambda x: x['PartNumber'])
+        s3_client.complete_multipart_upload(
+            Bucket=S3_BUCKET_NAME,
+            Key=cloud_key,
+            UploadId=upload_id,
+            MultipartUpload={'Parts': parts},
+        )
+    except Exception as e:
+        try:
+            s3_client.abort_multipart_upload(
+                Bucket=S3_BUCKET_NAME,
+                Key=cloud_key,
+                UploadId=upload_id,
+            )
+        except Exception:
+            pass
+        raise RuntimeError(f"Multipart upload failed: {e}")
 
 
 def generate_download_link(cloud_key: str, expires_in: int = 3600) -> str:

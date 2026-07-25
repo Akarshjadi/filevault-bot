@@ -3,7 +3,7 @@ SQLAlchemy 2.0 Models — mirrors the PostgreSQL schema exactly.
 Designed for Supabase/PostgreSQL with async support.
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional, List
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
@@ -14,7 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
-    pass
+    __allow_unmapped__ = True
 
 
 class UserRole(str, PyEnum):
@@ -49,8 +49,8 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    uploaded_files: Mapped[List["File"]] = relationship(back_populates="sender")
-    pending_files: Mapped[List["PendingFile"]] = relationship(back_populates="sender")
+    uploaded_files: List["File"] = relationship(back_populates="sender")
+    pending_files: List["PendingFile"] = relationship(back_populates="sender")
 
 
 class Vault(Base):
@@ -65,7 +65,7 @@ class Vault(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    files: Mapped[List["File"]] = relationship(
+    files: List["File"] = relationship(
         back_populates="vault", cascade="all, delete-orphan"
     )
 
@@ -95,7 +95,7 @@ class PendingFile(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    sender: Mapped["User"] = relationship(back_populates="pending_files")
+    sender: "User" = relationship(back_populates="pending_files")
 
 
 class File(Base):
@@ -120,15 +120,15 @@ class File(Base):
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger)
     file_name: Mapped[Optional[str]] = mapped_column(String(255))
     caption: Mapped[Optional[str]] = mapped_column(Text)
-    tags: Mapped[List[str]] = mapped_column(ARRAY(String), default=list)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=lambda: [])
 
     topic_id: Mapped[Optional[int]] = mapped_column(nullable=True)
     saved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    vault: Mapped["Vault"] = relationship(back_populates="files")
-    sender: Mapped["User"] = relationship(back_populates="uploaded_files")
+    vault: "Vault" = relationship(back_populates="files")
+    sender: "User" = relationship(back_populates="uploaded_files")
 
 
 class AuditLog(Base):
