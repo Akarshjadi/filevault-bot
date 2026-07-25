@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Evidence Recorder - FileVault</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.2.0/dist/tf.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@1.7.2/dist/face-api.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2.0.1/out/water.min.css">
+    <link rel="manifest" href="manifest.json">
+    <style>
+        body { background: #0a0a0a; color: #fff; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .upload-section { border: 2px dashed #333; padding: 40px; text-align: center; margin: 20px 0; }
+        .upload-section input[type="file"] { display: none; }
+        .upload-section label { cursor: pointer; color: #4CAF50; font-size: 1.2em; }
+        .faces-grid { display: grid; gap: 15px; margin: 20px 0; }
+        .face-card { background: #1a1a1a; padding: 15px; border-radius: 8px; border-left: 4px solid #FF9800; }
+        .face-card img { width: 100%; max-height: 200px; object-fit: cover; border-radius: 4px; }
+        .face-actions { margin-top: 10px; display: flex; gap: 10px; }
+        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
+        .btn-bystander { background: #f44336; color: white; }
+        .btn-official { background: #2196F3; color: white; }
+        .btn-official.selected { background: #4CAF50; }
+        .btn-bystander.selected { background: #d32f2f; }
+        .preview-section { margin: 20px 0; }
+        .preview-section video, .preview-section img { width: 100%; border-radius: 8px; }
+        .submit-btn { width: 100%; padding: 15px; background: #4CAF50; color: white; border: none; border-radius: 8px; font-size: 1.1em; cursor: pointer; margin-top: 20px; }
+        .submit-btn:disabled { background: #555; cursor: not-allowed; }
+        .status { text-align: center; padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .status.loading { background: #FF9800; }
+        .status.success { background: #4CAF50; }
+        .status.error { background: #f44336; }
+        .warning { background: #d32f2f; color: white; padding: 15px; border-radius: 8px; margin: 20px 0; }
+        .info { background: #1976D2; color: white; padding: 15px; border-radius: 8px; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📸 Evidence Recorder</h1>
+        
+        <div class="info">
+            <strong>🔒 Privacy Mode Active</strong><br>
+            • Face detection runs in your browser<br>
+            • Bystander faces are blurred BEFORE upload<br>
+            • No original footage leaves your device<br>
+            • Server never sees unblurred bystanders
+        </div>
+
+        <div class="warning">
+            <strong>⚠️ Important</strong><br>
+            Tag each person as:<br>
+            • <strong>Bystander</strong> - Will be blurred (default)<br>
+            • <strong>On-duty Official</strong> - You attest they were serving officially
+        </div>
+
+        <div class="upload-section">
+            <input type="file" id="fileInput" accept="image/*,video/*">
+            <label for="fileInput">
+                📁 Select Photo or Video<br>
+                <small>(Max 50MB)</small>
+            </label>
+        </div>
+
+        <div id="status" class="status" style="display:none;"></div>
+
+        <div id="preview" class="preview-section" style="display:none;">
+            <h3>Preview</h3>
+            <div id="previewContent"></div>
+        </div>
+
+        <div id="facesContainer" class="faces-grid" style="display:none;">
+            <h3>Tag Detected Faces</h3>
+            <div id="facesList"></div>
+        </div>
+
+        <div id="metadataSection" style="display:none;">
+            <h3>📋 Incident Details</h3>
+            <input type="text" id="incidentType" placeholder="Incident type (e.g., police_misconduct)" style="width:100%;padding:10px;margin:5px 0;">
+            <input type="text" id="location" placeholder="Location (general area only)" style="width:100%;padding:10px;margin:5px 0;">
+            <input type="datetime-local" id="incidentDate" style="width:100%;padding:10px;margin:5px 0;">
+            <textarea id="description" placeholder="Factual description only" style="width:100%;padding:10px;margin:5px 0;" rows="3"></textarea>
+            <label><input type="checkbox" id="contentWarning"> Contains sensitive/graphic content</label>
+        </div>
+
+        <button id="submitBtn" class="submit-btn" style="display:none;">
+            🔒 Submit Blurred Evidence
+        </button>
+    </div>
+
+    <script src="face_detection.js"></script>
+    <script>
+        const Telegram = window.Telegram;
+        const WebApp = Telegram && Telegram.WebApp;
+        
+        // Initialize Telegram WebApp
+        if (WebApp) {
+            WebApp.ready();
+            WebApp.expand();
+        }
+    </script>
+</body>
+</html>

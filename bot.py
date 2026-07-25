@@ -16,6 +16,16 @@ from commands.admin import admin_command, admin_users_command, admin_approve_com
 from handlers import handle_file
 from callbacks import handle_callback, process_person_name
 
+# Import new evidence vault handlers
+from handlers.register import get_registration_handler
+from handlers.submit import get_submission_handler
+from handlers.consent import get_consent_handlers
+from handlers.admin import get_admin_handler, set_admin_ids
+from handlers.forget import get_forget_handler, get_revoke_consent_handler
+
+# Import task queue
+from tasks import start_background_workers, stop_background_workers, enqueue_processing_job
+
 
 BOT_TOKEN = sys.argv[1] if len(sys.argv) > 1 else None
 if not BOT_TOKEN:
@@ -82,7 +92,30 @@ async def main():
     # Build application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Register handlers
+    # Register evidence vault handlers
+    application.add_handler(get_registration_handler())
+    application.add_handler(get_submission_handler())
+    application.add_handler(get_forget_handler())
+    application.add_handler(get_revoke_consent_handler())
+    
+    # Register admin handler with admin IDs from environment
+    import os
+    admin_ids_str = os.getenv("ADMIN_IDS", "")
+    if admin_ids_str:
+        try:
+            admin_ids = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip()]
+            set_admin_ids(admin_ids)
+            print(f"Loaded {len(admin_ids)} admin IDs")
+        except ValueError as e:
+            print(f"WARNING: Invalid ADMIN_IDS format: {e}")
+    
+    application.add_handler(get_admin_handler())
+    
+    # Register consent handlers
+    for handler in get_consent_handlers():
+        application.add_handler(handler)
+    
+    # Existing handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about_command))
@@ -114,9 +147,26 @@ async def main():
     # Person name reply handler (for admin approval flow)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_person_name))
     
+    # Start background task workers
+    await start_background_workers()
+    
     print("Bot started")
     await application.run_polling()
 
 
+async def shutdown():
+    """Graceful shutdown."""
+    print("Shutting down...")
+    await stop_background_workers()
+    await async_engine.dispose()
+    print("Shutdown complete")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nBot stopped by user")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        raise

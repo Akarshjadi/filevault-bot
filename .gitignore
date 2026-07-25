@@ -31,3 +31,27 @@ Thumbs.db
 
 # Logs
 *.log
+
+# WebApp
+webapp/node_modules/
+webapp/dist/
+webapp/.nuxt/
+webapp/.output/
+
+# Database
+*.db
+*.sqlite
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# R2 temp files
+tmp/
+temp/
+
+# Deployment
+.railway/
+.vercel/
+.netlify/

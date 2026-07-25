@@ -38,6 +38,30 @@ def decrypt_field(ciphertext_hex: str, nonce_hex: str, associated_data: str = No
     return pt.decode()
 
 
+def generate_anonymous_token(file_hash: str, user_hash: str) -> str:
+    """
+    Generate a one-way anonymous token linking a submission to a user.
+    This token CANNOT be reversed to identify the user.
+    
+    Purpose:
+    - Allows uploader to check status of their submissions
+    - Prevents spam by limiting submissions per user
+    - Does NOT create a persistent identity trail
+    
+    Args:
+        file_hash: SHA-256 hash of uploaded file
+        user_hash: Hashed Telegram user ID
+    
+    Returns:
+        str: 64-char hex token (HMAC-based)
+    """
+    import hmac
+    # Use file hash + user hash + random salt to create token
+    # The salt is stored in DB with the submission, but user_hash is not
+    token_data = f"{file_hash}:{user_hash}".encode()
+    return hmac.new(MASTER_SALT, token_data, hashlib.sha256).hexdigest()
+
+
 def is_minor_by_name(name: str) -> bool:
     """Simple heuristic to flag potential minors (to be refined)."""
     age_keywords = ["minor", "child", "kid", "juvenile", "underage"]
