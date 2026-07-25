@@ -48,13 +48,27 @@ async def archive_old_incidents():
 
 
 async def purge_old_audit_logs():
-    """Delete audit logs older than 30 days."""
+    """Delete audit logs older than 30 days.
+
+    Purges both user action audit logs (audit_logs) and admin audit logs
+    (admin_audit_logs) to comply with the 30-day retention policy.
+    """
     async with async_session_factory() as session:
+        # Purge user action audit logs
+        result = await session.execute(
+            text("DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '30 days'")
+        )
+        user_purged = result.rowcount
+
+        # Purge admin audit logs
         result = await session.execute(
             text("DELETE FROM admin_audit_logs WHERE created_at < NOW() - INTERVAL '30 days'")
         )
+        admin_purged = result.rowcount
+
         await session.commit()
-        print(f"[RETENTION] Purged {result.rowcount} audit log entries")
+        total = user_purged + admin_purged
+        print(f"[RETENTION] Purged {total} audit log entries ({user_purged} user, {admin_purged} admin)")
 
 
 async def main():

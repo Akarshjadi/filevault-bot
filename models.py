@@ -226,3 +226,23 @@ class AdminAuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class AuditLog(Base):
+    """User action audit logs with 30-day retention.
+
+    Tracks user-initiated actions (uploads, deletes, tags, GDPR forget, etc.)
+    for accountability and activity reporting.
+    """
+    __tablename__ = "audit_logs"
+
+    log_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    file_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

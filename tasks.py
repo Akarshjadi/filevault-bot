@@ -181,6 +181,18 @@ class TaskQueue:
                 from sqlalchemy import select, update as sa_update
                 
                 now = datetime.utcnow()
+                
+                # First fetch current job to get attempts count
+                result = await session.execute(
+                    select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+                )
+                job = result.scalar_one_or_none()
+                if not job:
+                    logger.warning(f"Job {job_id} not found for status update")
+                    return
+                
+                current_attempts = job.attempts or 0
+                
                 update_data = {
                     'status': status,
                     'updated_at': now,
@@ -190,7 +202,7 @@ class TaskQueue:
                     update_data['started_at'] = now
                 elif status in ('completed', 'failed'):
                     update_data['completed_at'] = now
-                    update_data['attempts'] = ProcessingJob.attempts + 1
+                    update_data['attempts'] = current_attempts + 1
                 
                 if error_message:
                     update_data['error_message'] = error_message

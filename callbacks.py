@@ -2,12 +2,14 @@
 Inline callback handlers — DPDP Act 2023 Compliant
 Adult/Minor approval flows with pseudonymization.
 """
+from datetime import datetime, timezone
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from sqlalchemy import select, text
 
-from utils import DbSession, escape_markdown
+from utils import DbSession, escape_markdown, log_audit
 from handlers import get_shared_vault
 from models import (
     Vault, File, FileType, PendingFile, User, UserRole,

@@ -11,6 +11,7 @@ from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.constants import ParseMode
 
 from models_vault import Profile, Incident, Submission, DetectedPerson, ConsentStatus, BlurStatus, SubjectType, get_session
 from crypto_utils import hash_telegram_user_id, generate_anonymous_token
@@ -109,6 +110,9 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Compute hash
     file_hash = hashlib.sha256(file_bytes).hexdigest()
+    
+    # Initialize exif_data
+    exif_data = {}
     
     # STRIP EXIF for privacy BEFORE storing
     if file_type == "image":

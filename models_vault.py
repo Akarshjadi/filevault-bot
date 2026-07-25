@@ -226,6 +226,16 @@ class ProcessingJob(Base):
     submission: Mapped["Submission"] = relationship("Submission", back_populates="processing_jobs")
 
 
+# Session helper for backwards compatibility
+from database import async_session_factory
+
+
+async def get_session():
+    """Get an async database session."""
+    async with async_session_factory() as session:
+        yield session
+
+
 class FaceEmbedding(Base):
     """Face embeddings for uploader self-matching."""
     __tablename__ = "face_embeddings"

@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, ConversationHandler
 
 from models_vault import (
     Profile, Submission, DetectedPerson, ConsentLog, FaceEmbedding,
@@ -47,7 +47,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # For now, check if user has any profile
         result = await session.execute(
-            select(Profile).where(Profile.telegram_user_hash == telegram_id_hash)
+            select(Profile).where(Profile.telegram_user_id_hash == telegram_id_hash)
         )
         profile = result.scalar_one_or_none()
         
@@ -233,7 +233,7 @@ async def revoke_consent_command(update: Update, context: ContextTypes.DEFAULT_T
         
         # Find user's profile
         result = await session.execute(
-            select(Profile).where(Profile.telegram_user_hash == telegram_id_hash)
+            select(Profile).where(Profile.telegram_user_id_hash == telegram_id_hash)
         )
         profile = result.scalar_one_or_none()
         
@@ -246,7 +246,6 @@ async def revoke_consent_command(update: Update, context: ContextTypes.DEFAULT_T
             select(Submission.submission_id)
             .join(DetectedPerson, DetectedPerson.submission_id == Submission.submission_id)
             .where(
-                Submission.uploader_id == profile.profile_id,
                 DetectedPerson.consent_status == 'granted'
             )
         )

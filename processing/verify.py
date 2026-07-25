@@ -301,6 +301,7 @@ async def verify_submission_job(submission_id: str, job_data: Dict) -> Dict:
     try:
         from models_vault import get_session, Submission
         from storage.r2 import get_r2_storage
+        from database import async_session_factory
         
         async with async_session_factory() as session:
             from sqlalchemy import select, update as sa_update
@@ -316,15 +317,15 @@ async def verify_submission_job(submission_id: str, job_data: Dict) -> Dict:
             
             # Download file from R2
             r2 = get_r2_storage()
-            file_bytes = r2.download(r2.BUCKET_PUBLISHED, submission.r2_key)
+            file_bytes = r2.download(r2.BUCKET_PUBLISHED, f"{submission.original_hash}/final.mp4")
             
             # Parse metadata
             metadata = {
-                'incident_type': submission.incident_type,
-                'location': submission.location_general,
-                'date': submission.incident_date.isoformat() if submission.incident_date else None,
-                'description': submission.description_factual,
-                'content_warning': submission.content_warning
+                'incident_type': 'other',
+                'location': 'Unknown',
+                'date': submission.created_at.isoformat() if submission.created_at else None,
+                'description': '',
+                'content_warning': False
             }
             
             # Verify

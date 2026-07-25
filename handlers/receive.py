@@ -67,27 +67,34 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         r2.upload_published(file_hash, file_bytes)
         
         # Save to database
+        from models_vault import Submission as SubmissionModel, Incident as IncidentModel
+        
         async with async_session_factory() as session:
             from sqlalchemy import select, insert
             
+            # Create incident record
+            incident = IncidentModel(
+                incident_type=metadata.get('incident_type', 'other'),
+                location_general=metadata.get('location', 'Unknown'),
+                incident_date=datetime.utcnow(),
+                description_factual=metadata.get('description', ''),
+                content_warning=metadata.get('content_warning', False),
+            )
+            session.add(incident)
+            await session.flush()
+            
             # Create submission record
             result = await session.execute(
-                insert(__import__('models_vault', fromlist=['Submission']).Submission)
+                insert(SubmissionModel)
                 .values(
                     original_hash=file_hash,
                     uploader_anonymous_token=generate_rate_limit_token(update.effective_user.id),
-                    incident_type=metadata.get('incident_type', 'other'),
-                    location_general=metadata.get('location', 'Unknown'),
-                    incident_date=metadata.get('date', datetime.utcnow().isoformat()),
-                    description_factual=metadata.get('description', ''),
-                    content_warning=metadata.get('content_warning', False),
+                    incident_id=incident.incident_id,
                     file_type=ext,
                     file_size=len(file_bytes),
-                    r2_key=r2_key,
-                    verification_status='pending',
                     status='pending_review'
                 )
-                .returning(__import__('models_vault', fromlist=['Submission']).Submission.submission_id)
+                .returning(SubmissionModel.submission_id)
             )
             submission_id = result.scalar_one()
             await session.commit()

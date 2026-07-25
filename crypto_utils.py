@@ -67,3 +67,16 @@ def is_minor_by_name(name: str) -> bool:
     age_keywords = ["minor", "child", "kid", "juvenile", "underage"]
     name_lower = name.lower()
     return any(kw in name_lower for kw in age_keywords)
+
+
+def hash_telegram_user_id(telegram_id: int) -> str:
+    """SHA-256 hash of Telegram user ID for pseudonymized storage."""
+    return hashlib.sha256(f"tg:{telegram_id}:{MASTER_SALT.hex()}".encode()).hexdigest()
+
+
+def encrypt_with_master_key(plaintext: str) -> tuple[bytes, bytes]:
+    """AES-256-GCM encrypt using master salt as key. Returns (ciphertext, nonce)."""
+    aesgcm = AESGCM(MASTER_SALT[:32])
+    nonce = os.urandom(12)
+    ct = aesgcm.encrypt(nonce, plaintext.encode(), b"")
+    return ct, nonce

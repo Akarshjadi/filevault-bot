@@ -7,7 +7,7 @@ from typing import Optional, Dict, List
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
+from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler, ConversationHandler
 
 from models_vault import (
     Profile, Submission, DetectedPerson, AdminAuditLog, 
@@ -109,14 +109,13 @@ async def show_pending_reviews(update: Update, context: ContextTypes.DEFAULT_TYP
         # Get paginated results
         offset = (page - 1) * per_page
         result = await session.execute(
-            select(Submission, Profile)
-            .join(Profile, Submission.uploader_id == Profile.profile_id)
+            select(Submission)
             .where(Submission.status == 'pending_review')
             .order_by(Submission.created_at.desc())
             .limit(per_page)
             .offset(offset)
         )
-        submissions = result.all()
+        submissions = [(s, None) for s in result.scalars().all()]
         
         if not submissions:
             await query.edit_message_text(
@@ -169,13 +168,11 @@ async def review_submission(update: Update, context: ContextTypes.DEFAULT_TYPE,
     async with async_session_factory() as session:
         from sqlalchemy import select
         
-        # Get submission with detected persons
+        # Get submission
         result = await session.execute(
-            select(Submission, Profile)
-            .join(Profile, Submission.uploader_id == Profile.profile_id)
-            .where(Submission.submission_id == submission_id)
+            select(Submission).where(Submission.submission_id == submission_id)
         )
-        submission, uploader = result.first()
+        submission = result.scalar_one_or_none()
         
         if not submission:
             await query.edit_message_text("❌ Submission not found.")
@@ -203,7 +200,7 @@ async def review_submission(update: Update, context: ContextTypes.DEFAULT_TYPE,
     msg += f"**ID:** `{submission_id[:16]}...`\n"
     msg += f"**Type:** {submission.file_type}\n"
     msg += f"**Status:** {submission.status}\n"
-    msg += f"**Uploaded by:** {uploader.first_name or 'Unknown'}\n"
+    msg += f"**Uploaded by:** Anonymous\n"
     msg += f"**Date:** {submission.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
     
     msg += f"**Detected Faces:** {len(detected_persons)}\n"

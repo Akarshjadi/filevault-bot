@@ -7,7 +7,7 @@ from typing import Optional, Dict
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ConversationHandler
 
 from models_vault import (
     Profile, Submission, DetectedPerson, ConsentStatus, BlurStatus, SubjectType,
@@ -392,7 +392,6 @@ def get_face_action_keyboard(face_id: str, is_minor: bool = False) -> InlineKeyb
 # Placeholder imports (should be in actual implementation)
 import io
 from sqlalchemy import update as sa_update
-from telegram.ext import ConversationHandler
 
 
 # Register handlers

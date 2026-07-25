@@ -9,7 +9,7 @@ from pathlib import Path
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from utils import ensure_user, DbSession, log_audit
-from database import init_db, async_engine
+from database import init_db, engine as async_engine
 from models import Base, User, UserRole
 from commands.core import start_command, help_command, about_command, my_data_command, forget_command
 from commands.admin import admin_command, admin_users_command, admin_approve_command, admin_deny_command, admin_stats_command, admin_logs_command, admin_broadcast_command, admin_setrole_command, admin_vault_command, settings_command, setnotif_command, setvault_command, adduser_command, removeuser_command
@@ -27,15 +27,15 @@ from handlers.forget import get_forget_handler, get_revoke_consent_handler
 from tasks import start_background_workers, stop_background_workers, enqueue_processing_job
 
 
-BOT_TOKEN = sys.argv[1] if len(sys.argv) > 1 else None
+# Load environment variables from .env file
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    from dotenv import load_dotenv
-    import os
-    load_dotenv()
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    if not BOT_TOKEN:
-        print("ERROR: BOT_TOKEN not provided. Pass as argument or set in .env")
-        sys.exit(1)
+    print("ERROR: BOT_TOKEN not provided. Set it in your environment or a .env file.")
+    sys.exit(1)
 
 
 async def run_migrations():
@@ -99,16 +99,15 @@ async def main():
     application.add_handler(get_revoke_consent_handler())
     
     # Register admin handler with admin IDs from environment
-    import os
     admin_ids_str = os.getenv("ADMIN_IDS", "")
     if admin_ids_str:
         try:
             admin_ids = [int(id.strip()) for id in admin_ids_str.split(",") if id.strip()]
             set_admin_ids(admin_ids)
-            print(f"Loaded {len(admin_ids)} admin IDs")
+            print(f"Loaded {len(admin_ids)} admin IDs from environment.")
         except ValueError as e:
             print(f"WARNING: Invalid ADMIN_IDS format: {e}")
-    
+
     application.add_handler(get_admin_handler())
     
     # Register consent handlers
