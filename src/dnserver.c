@@ -288,6 +288,16 @@ uint16_t getConnectCount()
 
 void start_dns_server()
 {
+    // GOD-TWEAK: opt-out switch. When NVS key "dns_server" == 0 the captive
+    // DNS responder is never started, so OS connectivity checks fail
+    // cleanly (NXDOMAIN/timeout) instead of being redirected to the UI.
+    int32_t dns_enabled = 1;
+    get_config_param_int("dns_server", &dns_enabled);
+    if (dns_enabled == 0)
+    {
+        ESP_LOGI(TAG, "DNS Server disabled (dns_server=0)");
+        return;
+    }
     xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, &task);
     ESP_LOGI(TAG, "DNS Server started");
 }

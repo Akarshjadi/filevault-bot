@@ -170,7 +170,28 @@ esp_err_t index_get_handler(httpd_req_t *req)
 
     closeHeader(req);
 
-    esp_err_t ret = httpd_resp_send(req, config_page, HTTPD_RESP_USE_STRLEN);
+    // GOD-TWEAK (Stage C): stream the config page in 4KB chunks instead of
+    // one large httpd_resp_send, to cut peak heap usage on the ESP32.
+    const char *p = config_page;
+    size_t total = strlen(config_page);
+    size_t offset = 0;
+    while (offset < total)
+    {
+        size_t chunk = total - offset;
+        if (chunk > 4096)
+        {
+            chunk = 4096;
+        }
+        esp_err_t r = httpd_resp_send_chunk(req, p + offset, chunk);
+        if (r != ESP_OK)
+        {
+            free(config_page);
+            return r;
+        }
+        offset += chunk;
+    }
+    // terminating empty chunk ends the chunked response
+    esp_err_t ret = httpd_resp_send_chunk(req, (char *)"", 0);
     free(config_page);
     free(appliedSSID);
     appliedSSID = NULL;

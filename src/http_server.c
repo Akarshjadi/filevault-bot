@@ -177,6 +177,10 @@ httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Keep alive is disabled");
     }
 
+    // GOD-TWEAK: serve UI on 8080 so OS captive-portal probes (port 80)
+    // see nothing and never trigger the "no internet" sheet.
+    config.server_port = 8080;
+
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK)
