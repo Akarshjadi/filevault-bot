@@ -364,7 +364,7 @@ void setHostName()
         // Generate a random number between 1000 and 9999
         int random_number = esp_random() % 9000 + 1000;
         hostName = (char *)malloc(14 * sizeof(char));
-        sprintf(hostName, "esp32nre%d", random_number);
+        sprintf(hostName, "god");
         nvs_handle_t nvs;
         ESP_ERROR_CHECK(nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs));
         ESP_ERROR_CHECK(nvs_set_str(nvs, "hostname", hostName));
@@ -806,7 +806,7 @@ void app_main(void)
 {
     initialize_nvs();
     register_nvs();
-    if (checkForResetPinAndReset())
+    if (false)
     {
         esp_restart(); // C-01: was `return;` leaving a zombie app_main
     }
@@ -848,12 +848,12 @@ void app_main(void)
     get_config_param_str("ap_ssid", &ap_ssid);
     if (ap_ssid == NULL)
     {
-        ap_ssid = param_set_default("ESP32_NAT_Router");
+        ap_ssid = param_set_default("toddler");
     }
     get_config_param_str("ap_passwd", &ap_passwd);
     if (ap_passwd == NULL)
     {
-        ap_passwd = param_set_default("");
+        ap_passwd = param_set_default("havemebaby");
     }
     get_config_param_str("ap_ip", &ap_ip);
     if (ap_ip == NULL)

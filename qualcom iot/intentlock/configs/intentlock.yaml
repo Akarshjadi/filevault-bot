@@ -1,0 +1,68 @@
+audio:
+  sample_rate: 16000
+  frame_ms: 25
+  hop_ms: 10
+  n_mels: 40
+  wake_threshold: 0.8
+  max_noise_rms: 0.02
+  backend: simulator
+
+vision:
+  frame_rate: 5.0
+  person_threshold: 0.6
+  identity_threshold: 0.7
+  attention_threshold: 0.5
+  ambiguity_margin: 0.15
+  occlusion_timeout_s: 1.5
+  max_faces: 4
+  backend: simulator
+
+gesture:
+  sample_rate: 100
+  window_ms: 800
+  stride_ms: 200
+  accel_range_g: 8.0
+  gyro_range_dps: 1000.0
+  confidence_threshold: 0.7
+  unknown_floor: 0.45
+  max_accel_g: 12.0
+  activity_energy_floor: 0.004
+  backend: simulator
+
+temporal:
+  wake_to_gesture_min_ms: 200
+  wake_to_gesture_max_ms: 4000
+  person_to_wake_max_ms: 5000
+  max_sequence_ms: 12000
+  event_ttl_ms: 15000
+  ordering_jitter_ms: 40
+
+intent:
+  intent_threshold: 0.75
+  reject_below: 0.35
+  minimum_evidence: 3
+  require_identity_consistency: true
+  ordering_weight: 0.15
+  identity_weight: 0.15
+  context_weight: 0.10
+
+safety:
+  cooldown_ms: 1500
+  retry_timeout_ms: 5000
+  max_retries: 2
+  max_commands_per_minute: 12
+  require_verified_identity: true
+  reject_on_sensor_loss: true
+  executor: logging
+
+privacy:
+  persist_biometrics: false
+  identity_hash_salt: "intentlock-default-salt-change-in-production"
+  max_embeddings_in_memory: 64
+  interaction_retention_s: 300
+
+telemetry:
+  enabled: true
+  output_dir: "./artifacts/telemetry"
+  record_raw_media: false
+  log_level: INFO

@@ -1,0 +1,30 @@
+{
+  "session_id": "test-session-valid",
+  "events": [
+    {
+      "event_type": "person_present",
+      "timestamp_ns": 1000000000,
+      "confidence": 0.9,
+      "source": "vision",
+      "subject_id": "user_1",
+      "event_id": "evt-1"
+    },
+    {
+      "event_type": "wake_detected",
+      "timestamp_ns": 1500000000,
+      "confidence": 0.95,
+      "source": "audio",
+      "subject_id": "user_1",
+      "event_id": "evt-2"
+    },
+    {
+      "event_type": "gesture_detected",
+      "timestamp_ns": 2000000000,
+      "confidence": 0.85,
+      "source": "imu",
+      "subject_id": "user_1",
+      "label": "LEFT",
+      "event_id": "evt-3"
+    }
+  ]
+}
