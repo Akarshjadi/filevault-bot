@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang=en>
+
+<head>
+    <link rel="shortcut icon" type=image/x-icon href=favicon.ico>
+    <meta charset=utf-8>
+    <meta http-equiv=X-UA-Compatible content="IE=edge">
+    <meta name=viewport content="width=device-width, initial-scale=1">
+    <link rel=stylesheet href=styles-67aa3b0203355627b525be2ea57be7bf.css>
+    <title>Wi-Fi Test Suite</title>
+</head>
+
+<body>
+    <div class=container>
+        <div class="row text-center">
+            <h1>Wi-Fi Test Suite</h1>
+        </div>
+        <div class="alert alert-light mt-2 text-center" role=alert>
+            <p class="mb-1">Passive AP scan. Results auto-refresh every 30s.
+            Use the serial console for station discovery and active tools.</p>
+            <p class="mb-0 text-danger small">Active (transmit) features are compile-gated and
+            must only be used on networks you own or have written authorization to test.</p>
+        </div>
+        <table class="table table-striped" id=wifi_table>
+            <thead class="text-center fw-bold">
+                <tr>
+                    <th class=fw-bold>SSID</th>
+                    <th class=fw-bold>BSSID</th>
+                    <th class=fw-bold>Ch</th>
+                    <th class=fw-bold>RSSI</th>
+                    <th class=fw-bold>Auth</th>
+                </tr>
+            </thead>
+            <tbody class=text-center>
+                <tr><td colspan="5" class="text-info">Scanning&hellip;</td></tr>
+            </tbody>
+        </table>
+        <div class="row">
+            <div class="col text-center">
+                <a class="btn btn-secondary" href="/">Back</a>
+            </div>
+        </div>
+    </div>
+
+    <script src=jquery-8a1045d9cbf50b52a0805c111ba08e94.js></script>
+    <script>
+    $(function () {
+        function rssiClass(v) {
+            if (v >= -50) return "text-success";
+            if (v >= -70) return "text-info";
+            return "text-warning";
+        }
+        function refresh() {
+            $.getJSON("/api/wifi", function (aps) {
+                var rows = "";
+                if (!aps || !aps.length) {
+                    rows = "<tr><td colspan='5' class='text-danger'>No networks found</td></tr>";
+                } else {
+                    aps.forEach(function (a, i) {
+                        rows += "<tr>" +
+                            "<td>" + (a.ssid || "(hidden)") + "</td>" +
+                            "<td class='small'>" + a.bssid + "</td>" +
+                            "<td>" + a.channel + "</td>" +
+                            "<td class='" + rssiClass(a.rssi) + "'>" + a.rssi + "</td>" +
+                            "<td>" + a.auth + "</td>" +
+                            "</tr>";
+                    });
+                }
+                $("#wifi_table tbody").html(rows);
+            }).fail(function () {
+                $("#wifi_table tbody").html("<tr><td colspan='5' class='text-danger'>Scan failed / offline</td></tr>");
+            });
+        }
+        refresh();
+        setInterval(refresh, 30000);
+    });
+    </script>
+
+</html>
