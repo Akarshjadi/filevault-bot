@@ -204,5 +204,5 @@ void fillNodes()
 
     ESP_ERROR_CHECK(nvs_commit(nvs));
     nvs_close(nvs);
-    esp_restart();
+    // Removed esp_restart() — keep AP up, redirect to /result instead
 }

@@ -329,11 +329,9 @@ void setTxPower()
 {
     int32_t txPower = 0;
     get_config_param_int("txpower", &txPower);
-    if (txPower >= 8 && txPower <= 84)
-    {
-        ESP_LOGI(TAG, "Setting Wifi tx power to %ld.", txPower);
-        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(txPower));
-    }
+    if (txPower < 8 || txPower > 84) txPower = 84;  // Default to max power (20 dBm / 100 mW) on first boot
+    ESP_LOGI(TAG, "Setting Wifi tx power to %ld.", txPower);
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(txPower));
 }
 
 void set3rdOctet()
@@ -355,7 +353,7 @@ void set3rdOctet()
 
 void setHostName()
 {
-    const char *default_name = "god";
+    const char *default_name = "GOD";
     ESP_LOGI(TAG, "Setting hostname to: %s", default_name);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_err_t err = esp_netif_set_hostname(sta_netif, default_name);
@@ -437,12 +435,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "STA disconnected, reason=%d", disconnected->reason);
         ap_connect = false;
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
-        // C-14: bounded retries with backoff; AP+UI stay up
+        // C-14: bounded retries; AP+UI stay up (no blocking delay in event handler)
         if (sta_retry_count < STA_MAX_RETRIES)
         {
             sta_retry_count++;
             ESP_LOGI(TAG, "Retry connection to AP (%d/%d)...", sta_retry_count, STA_MAX_RETRIES);
-            vTaskDelay(pdMS_TO_TICKS(1000));
             esp_wifi_connect();
         }
         else
@@ -660,38 +657,10 @@ void wifi_init(const char *ssid, const char *passwd, const char *static_ip, cons
     xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
                         pdFALSE, pdTRUE, JOIN_TIMEOUT_MS / portTICK_PERIOD_MS);
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));  // Disable WiFi power-save for low latency
 
     if (strlen(ssid) > 0)
     {
-        // C-14: boot scan — check visibility and RSSI
-        ESP_LOGI(TAG, "Boot scan for uplink \"%s\" ...", ssid);
-        uplink_visible_at_boot = false;
-        esp_wifi_scan_stop();
-        uint16_t ap_num = 0;
-        if (esp_wifi_scan_start(NULL, true) == ESP_OK)
-        {
-            if (esp_wifi_scan_get_ap_num(&ap_num) == ESP_OK && ap_num > 0)
-            {
-                wifi_ap_record_t *aps = calloc(ap_num, sizeof(wifi_ap_record_t));
-                if (aps && esp_wifi_scan_get_ap_records(&ap_num, aps) == ESP_OK)
-                {
-                    for (uint16_t i = 0; i < ap_num; i++)
-                    {
-                        if (strncmp((char *)aps[i].ssid, ssid, 32) == 0)
-                        {
-                            uplink_visible_at_boot = true;
-                            ESP_LOGI(TAG, "Uplink \"%s\" visible, RSSI %d dBm", aps[i].ssid, aps[i].rssi);
-                            break;
-                        }
-                    }
-                    free(aps);
-                }
-            }
-        }
-        if (!uplink_visible_at_boot)
-        {
-            ESP_LOGW(TAG, "Uplink \"%s\" not visible in initial scan; will still attempt to connect", ssid);
-        }
         ESP_LOGI(TAG, "wifi_init_apsta finished.");
         ESP_LOGI(TAG, "connect to ap SSID: %s Password: %s", ssid, passwd);
         esp_wifi_connect();
