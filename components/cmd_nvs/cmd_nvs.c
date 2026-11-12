@@ -366,7 +366,10 @@ static esp_err_t erase_all(const char *name)
 
     ESP_LOGI(TAG, "Namespace '%s' was %s erased", name, (err == ESP_OK) ? "" : "not");
 
-    nvs_close(nvs);
+    if (err == ESP_OK) // C-06: don't close an uninitialized handle
+    {
+        nvs_close(nvs);
+    }
     return ESP_OK;
 }
 

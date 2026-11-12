@@ -85,6 +85,11 @@ char *lock_pass = NULL;
 char *ap_passwd = NULL;
 char *ap_ip = NULL;
 
+// C-14: bounded STA retries; AP+UI stay up when uplink is not visible
+static bool uplink_visible_at_boot = false;
+static int sta_retry_count = 0;
+#define STA_MAX_RETRIES 5
+
 /* WPA2 settings */
 char *sta_identity = NULL;
 char *sta_user = NULL;
@@ -435,20 +440,47 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-        esp_wifi_connect();
+        if (uplink_visible_at_boot)
+        {
+            esp_wifi_connect();
+        }
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-        ESP_LOGI(TAG, "disconnected - retry to connect to the STA");
+        wifi_event_sta_disconnected_t *disconnected = (wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGI(TAG, "STA disconnected, reason=%d", disconnected->reason);
         ap_connect = false;
-        esp_wifi_connect();
-        ESP_LOGI(TAG, "retry to connect to the STA");
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        // C-14: bounded retries; AP+UI stay up when uplink not visible
+        if (uplink_visible_at_boot && sta_retry_count < STA_MAX_RETRIES)
+        {
+            sta_retry_count++;
+            esp_wifi_connect();
+        }
+        else if (!uplink_visible_at_boot)
+        {
+            ESP_LOGW(TAG, "Uplink %s not found on boot; AP+UI stay up, waiting for user config", "saved-SSID");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Uplink unavailable after %d tries; AP+UI stay up", sta_retry_count);
+        }
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: http://" IPSTR, IP2STR(&event->ip_info.ip));
+        // C-14: reset retry budget on success
+        sta_retry_count = 0;
+        // GOD-TWEAK: log uplink RSSI
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        {
+            ESP_LOGI(TAG, "STA uplink RSSI: %d dBm, BSSID: %02x:%02x:%02x:%02x:%02x:%02x",
+                     ap.rssi,
+                     ap.bssid[0], ap.bssid[1], ap.bssid[2],
+                     ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+        }
         stop_dns_server();
         ap_connect = true;
         my_ip = event->ip_info.ip.addr;
@@ -647,6 +679,35 @@ void wifi_init(const char *ssid, const char *passwd, const char *static_ip, cons
 
     if (strlen(ssid) > 0)
     {
+        // C-14: boot scan — only connect to the saved uplink if it's actually visible
+        ESP_LOGI(TAG, "Boot scan for uplink \"%s\" ...", ssid);
+        uplink_visible_at_boot = false;
+        esp_wifi_scan_stop();
+        uint16_t ap_num = 0;
+        if (esp_wifi_scan_start(NULL, true) == ESP_OK)
+        {
+            if (esp_wifi_scan_get_ap_num(&ap_num) == ESP_OK && ap_num > 0)
+            {
+                wifi_ap_record_t *aps = calloc(ap_num, sizeof(wifi_ap_record_t));
+                if (aps && esp_wifi_scan_get_ap_records(&ap_num, aps) == ESP_OK)
+                {
+                    for (uint16_t i = 0; i < ap_num; i++)
+                    {
+                        if (strncmp((char *)aps[i].ssid, ssid, 32) == 0)
+                        {
+                            uplink_visible_at_boot = true;
+                            ESP_LOGI(TAG, "Uplink \"%s\" visible, RSSI %d dBm", aps[i].ssid, aps[i].rssi);
+                            break;
+                        }
+                    }
+                    free(aps);
+                }
+            }
+        }
+        if (!uplink_visible_at_boot)
+        {
+            ESP_LOGW(TAG, "Uplink \"%s\" not visible; staying on AP+UI until configured", ssid);
+        }
         ESP_LOGI(TAG, "wifi_init_apsta finished.");
         ESP_LOGI(TAG, "connect to ap SSID: %s Password: %s", ssid, passwd);
     }
@@ -748,7 +809,7 @@ void app_main(void)
     register_nvs();
     if (checkForResetPinAndReset())
     {
-        return;
+        esp_restart(); // C-01: was `return;` leaving a zombie app_main
     }
     setLogLevel();
 

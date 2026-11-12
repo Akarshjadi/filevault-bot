@@ -204,6 +204,9 @@ void dns_server_task(void *pvParameters)
         if (err < 0)
         {
             ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
+            close(sock);
+            // C-12: don't fall into the recvfrom loop on a failed bind
+            return;
         }
         ESP_LOGI(TAG, "Socket bound, port %d", DNS_PORT);
 

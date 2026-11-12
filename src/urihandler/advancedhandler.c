@@ -182,7 +182,8 @@ esp_err_t advanced_download_get_handler(httpd_req_t *req)
         customMask = netmask;
     }
 
-    u_int size = advanced_html_size + strlen(aliveCB) + strlen(ledCB) + strlen(natCB) + strlen(currentDNS) + strlen(currentMAC) + 3 * strlen("checked") + strlen(customDNSIP) + 2 * strlen(defaultMAC) + strlen(customMac) + strlen(netmask) + strlen(hostName) + 2 * strlen("selected") + strlen(customMask) + 4 /* 4 * Octet - 4 *%d*/;
+    u_int size = advanced_html_size + strlen(aliveCB) + strlen(ledCB) + strlen(natCB) + strlen(currentDNS) + strlen(currentMAC) + 3 * strlen("checked") + strlen(customDNSIP) + 2 * strlen(defaultMAC) + strlen(customMac) + strlen(netmask) + strlen(hostName) + 2 * strlen("selected") + strlen(customMask) + 4;
+    size += strlen(hostName) + 256; // C-10: headroom for long hostname values
     ESP_LOGI(TAG, "Allocating additional %d bytes for advanced page.", size);
     char *advanced_page = malloc(size);
 

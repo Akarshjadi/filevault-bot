@@ -16,7 +16,7 @@
 
 static const char *TAG = "Wifi-Scan";
 
-static void print_auth_mode(int authmode)
+static void __attribute__((unused)) print_auth_mode(int authmode)
 {
     switch (authmode)
     {
@@ -55,7 +55,7 @@ static void print_auth_mode(int authmode)
         break;
     }
 }
-static void print_cipher_type(int pairwise_cipher, int group_cipher)
+static void __attribute__((unused)) print_cipher_type(int pairwise_cipher, int group_cipher)
 {
     switch (pairwise_cipher)
     {
@@ -130,52 +130,52 @@ static void print_cipher_type(int pairwise_cipher, int group_cipher)
 }
 
 /* Initialize Wi-Fi as sta and set scan method */
+// C-03/C-13: keep the running wifi stack (no re-init / AP teardown),
+// keep AP mode so clients stay connected, heap buffer instead of stack frame.
 static char *wifi_scan(void)
 {
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    esp_wifi_disconnect();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_wifi_scan_stop();
+    vTaskDelay(200 / portTICK_PERIOD_MS);
 
     uint16_t number = DEFAULT_SCAN_LIST_SIZE;
-    wifi_ap_record_t ap_info[DEFAULT_SCAN_LIST_SIZE];
+    wifi_ap_record_t *ap_info = calloc(DEFAULT_SCAN_LIST_SIZE, sizeof(wifi_ap_record_t));
     uint16_t ap_count = 0;
-    memset(ap_info, 0, sizeof(ap_info));
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (!ap_info) return NULL;
+    memset(ap_info, 0, sizeof(wifi_ap_record_t) * DEFAULT_SCAN_LIST_SIZE);
 
     esp_wifi_scan_start(NULL, true);
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
+    if (esp_wifi_scan_get_ap_num(&ap_count) != ESP_OK)
+    {
+        free(ap_info);
+        return NULL;
+    }
+    if (esp_wifi_scan_get_ap_records(&number, ap_info) != ESP_OK)
+    {
+        free(ap_info);
+        return NULL;
+    }
     ESP_LOGI(TAG, "Total APs scanned = %u", ap_count);
 
-    char result[DEFAULT_SCAN_LIST_SIZE * 100];
-    strcpy(result, "");
-
-    for (int i = 0; (i < DEFAULT_SCAN_LIST_SIZE) && (i < ap_count); i++)
+    char *result = malloc(DEFAULT_SCAN_LIST_SIZE * 100);
+    if (!result)
     {
-        ESP_LOGI(TAG, "SSID \t\t%s", ap_info[i].ssid);
-        ESP_LOGI(TAG, "RSSI \t\t%d", ap_info[i].rssi);
-        print_auth_mode(ap_info[i].authmode);
-        if (ap_info[i].authmode != WIFI_AUTH_WEP)
-        {
-            print_cipher_type(ap_info[i].pairwise_cipher, ap_info[i].group_cipher);
-        }
-        ESP_LOGI(TAG, "Channel \t\t%d\n", ap_info[i].primary);
+        free(ap_info);
+        return NULL;
+    }
+    result[0] = '\0';
 
+    for (int i = 0; (i < number) && (i < ap_count); i++)
+    {
+        ESP_LOGI(TAG, "SSID   %s", ap_info[i].ssid);
+        ESP_LOGI(TAG, "RSSI   %d", ap_info[i].rssi);
         char *tmp = malloc(100);
-
         sprintf(tmp, "%s\x03%d\x05", ap_info[i].ssid, ap_info[i].rssi);
-
         strcat(result, tmp);
         free(tmp);
     }
 
-    char *a_ptr = result;
-
-    return a_ptr;
+    free(ap_info);
+    return result; // C-03: heap buffer, caller owns it
 
 }
 
@@ -190,10 +190,16 @@ void fillNodes()
     }
     ESP_ERROR_CHECK(ret);
 
-    const char *scan_result = wifi_scan();
+    char *scan_result = wifi_scan();
+    if (scan_result == NULL)
+    {
+        ESP_LOGE(TAG, "scan failed; keeping uplink and AP up");
+        return; // C-13: no reboot on failure
+    }
     nvs_handle_t nvs;
     ESP_ERROR_CHECK(nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs));
     ESP_ERROR_CHECK(nvs_set_str(nvs, "scan_result", scan_result));
+    free(scan_result); // C-03: free the heap buffer
     nvs_erase_key(nvs, "result_shown");
 
     ESP_ERROR_CHECK(nvs_commit(nvs));

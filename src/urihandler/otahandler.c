@@ -109,10 +109,16 @@ esp_err_t version_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_DATA:
         if (!esp_http_client_is_chunked_response(evt->client))
         {
-            size_t new_size = file_size + evt->data_len;
-            file_buffer = realloc(file_buffer, new_size);
+            size_t new_size = file_size + evt->data_len + 1; // C-08: room for NUL
+            char *new_buf = realloc(file_buffer, new_size);
+            if (new_buf == NULL) // C-07: check realloc
+            {
+                return ESP_FAIL;
+            }
+            file_buffer = new_buf;
             memcpy(file_buffer + file_size, evt->data, evt->data_len);
-            file_size = new_size;
+            file_buffer[new_size - 1] = '\0'; // keep NUL-terminated
+            file_size = new_size - 1;
         }
         break;
     case HTTP_EVENT_ON_FINISH:
@@ -181,8 +187,7 @@ void ota_task(void *pvParameter)
     esp_http_client_config_t config = {
         .url = url,
         .event_handler = ota_event_event_handler,
-        .skip_cert_common_name_check = true,
-        .timeout_ms = DOWNLOAD_TIMEOUT_MS};
+        .timeout_ms = DOWNLOAD_TIMEOUT_MS}; // S-02: verify certs
 
     esp_https_ota_config_t ota_config = {
         .http_config = &config,
@@ -215,6 +220,8 @@ void appendToChangelog(const char *entry)
 
 void updateVersion()
 {
+    file_buffer = NULL;
+    file_size = 0;
     const char *usedUrl = get_default_url();
     char url[strlen(usedUrl) + 50];
     strcpy(url, usedUrl);
@@ -230,10 +237,9 @@ void updateVersion()
     changelog[0] = '\0';
     http_handler_data_t *handler_data = (http_handler_data_t *)config.user_data;
 
-    if (err == ESP_OK && handler_data->http_code == 200)
+    if (err == ESP_OK && handler_data->http_code == 200 && file_size > 0) // C-08
     {
         ESP_LOGI(TAG, "Version and changelog download succesful. File size is: %d Bytes", file_size);
-        file_buffer[file_size - 1] = '\0'; // Terminate the string on the correct length
         char *rest = file_buffer;
         char *line;
         int lineNumber = 1;
@@ -367,8 +373,10 @@ esp_err_t ota_post_handler(httpd_req_t *req)
         return redirectToLock(req);
     }
 
+    size_t bufferLength = req->content_len > 1024 ? 1024 : req->content_len; // C-04
     int ret, remaining = req->content_len;
-    char buf[req->content_len];
+    char buf[bufferLength + 1]; // S-01: +1 for NUL terminator
+    memset(buf, 0, sizeof(buf));
 
     while (remaining > 0)
     {
@@ -385,7 +393,6 @@ esp_err_t ota_post_handler(httpd_req_t *req)
 
         remaining -= ret;
     }
-    buf[req->content_len] = '\0';
     ESP_LOGI(TAG, "Getting with post: %s", buf);
 
     updateVersion();

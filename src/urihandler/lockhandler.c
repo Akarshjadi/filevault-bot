@@ -23,20 +23,20 @@ esp_err_t unlock_handler(httpd_req_t *req)
 
     httpd_req_to_sockfd(req);
 
-    size_t content_len = req->content_len;
+    size_t content_len = req->content_len > 1024 ? 1024 : req->content_len; // C-04: bound VLA size
     char buf[content_len];
 
     if (fill_post_buffer(req, buf, content_len) == ESP_OK)
     {
 
-        char unlockParam[req->content_len];
-        readUrlParameterIntoBuffer(buf, "unlock", unlockParam, req->content_len);
+        char unlockParam[content_len];
+        readUrlParameterIntoBuffer(buf, "unlock", unlockParam, content_len);
 
         if (strlen(unlockParam) > 0)
         {
-            char *lock;
+            char *lock = NULL; // C-02: init + NULL check
             get_config_param_str("lock_pass", &lock);
-            if (strcmp(lock, unlockParam) == 0)
+            if (lock != NULL && strcmp(lock, unlockParam) == 0)
             {
                 locked = false;
                 httpd_resp_set_status(req, "302 Found");
@@ -72,8 +72,9 @@ esp_err_t lock_handler(httpd_req_t *req)
 
     if (req->method == HTTP_POST) // Relock if called
     {
+        size_t content_len = req->content_len > 1024 ? 1024 : req->content_len; // C-04
         int ret, remaining = req->content_len;
-        char buf[req->content_len];
+        char buf[content_len];
 
         while (remaining > 0)
         {
@@ -91,10 +92,10 @@ esp_err_t lock_handler(httpd_req_t *req)
             remaining -= ret;
         }
 
-        char passParam[req->content_len], pass2Param[req->content_len];
+        char passParam[content_len], pass2Param[content_len]; // C-04
 
-        readUrlParameterIntoBuffer(buf, "lockpass", passParam, req->content_len);
-        readUrlParameterIntoBuffer(buf, "lockpass2", pass2Param, req->content_len);
+        readUrlParameterIntoBuffer(buf, "lockpass", passParam, content_len);
+        readUrlParameterIntoBuffer(buf, "lockpass2", pass2Param, content_len);
         ESP_LOGI(TAG, "Found pass2 parameter => %s", pass2Param);
         if (strlen(passParam) == strlen(pass2Param) && strcmp(passParam, pass2Param) == 0)
         {

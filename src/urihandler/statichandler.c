@@ -46,9 +46,10 @@ esp_err_t redirectToRoot(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Temporary Redirect");
     char *currentIP = getDefaultIPByNetmask();
-    char str[strlen("http://") + strlen(currentIP)];
+    char str[strlen("http://") + strlen(currentIP) + 6]; // U-01: room for :8080
     strcpy(str, "http://");
     strcat(str, currentIP);
+    strcat(str, ":8080"); // GOD-TWEAK: UI is on 8080
     httpd_resp_set_hdr(req, "Location", str);
     httpd_resp_set_hdr(req, "Connection", "Close");
     httpd_resp_send(req, "", HTTPD_RESP_USE_STRLEN);
@@ -67,6 +68,11 @@ esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 
 esp_err_t reset_get_handler(httpd_req_t *req)
 {
+    // S-03: factory-reset page is destructive — require auth
+    if (isLocked())
+    {
+        return redirectToLock(req);
+    }
     httpd_req_to_sockfd(req);
     extern const char reset_start[] asm("_binary_reset_html_start");
 

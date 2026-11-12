@@ -52,7 +52,7 @@ void setStaByQuery(char *urlContent, nvs_handle_t nvs)
 }
 void setWpa2(char *urlContent, nvs_handle_t nvs)
 {
-    size_t contentLength = strlen(urlContent);
+    size_t contentLength = strlen(urlContent) + 1; // C-05: zero-length VLA when body empty
     char param[contentLength];
     readUrlParameterIntoBuffer(urlContent, "sta_identity", param, contentLength);
     if (strlen(param) > 0)
@@ -141,12 +141,31 @@ bool str2mac(const char *mac)
 
 char *getRedirectUrl(httpd_req_t *req)
 {
-
-    size_t buf_len = 16;
+    // C-09: host header can be "IP:PORT" — use 64, init buffers, check NULL
+    size_t buf_len = 64;
     char *host = malloc(buf_len);
-    httpd_req_get_hdr_value_str(req, "Host", host, buf_len);
-    ESP_LOGI(TAG, "Host of request is '%s'", host);
+    if (!host) return NULL;
+    memset(host, 0, buf_len);
+    if (httpd_req_get_hdr_value_str(req, "Host", host, buf_len) != ESP_OK)
+    {
+        free(host);
+        host = NULL;
+    }
+    if (host == NULL || strlen(host) == 0)
+    {
+        host = strdup(DEFAULT_AP_IP_CLASS_C);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Host of request is '%s'", host);
+        char *ip = host;
+        char *colon = strchr(host, ':');
+        if (colon) *colon = '\0';
+        host = ip;
+    }
+
     char *str = malloc(strlen("http://") + buf_len);
+    if (!str) { free(host); return NULL; }
     strcpy(str, "http://");
     if (strcmp(host, DEFAULT_AP_IP_CLASS_A) == 0 || strcmp(host, DEFAULT_AP_IP_CLASS_B) == 0 || strcmp(host, DEFAULT_AP_IP_CLASS_C) == 0)
     {
@@ -376,6 +395,10 @@ esp_err_t apply_get_handler(httpd_req_t *req)
     closeHeader(req);
 
     char *redirectUrl = getRedirectUrl(req);
+    if (!redirectUrl)
+    {
+        redirectUrl = strdup("http://192.168.4.1");
+    }
     char *apply_page = malloc(apply_end - apply_start + strlen(redirectUrl) - 2);
 
     ESP_LOGI(TAG, "Redirecting after apply to '%s'", redirectUrl);
@@ -394,11 +417,11 @@ esp_err_t apply_post_handler(httpd_req_t *req)
 
     int remaining = req->content_len;
     int ret = 0;
-    int bufferLength = req->content_len;
+    size_t bufferLength = req->content_len > 1024 ? 1024 : req->content_len; // C-04: cap VLA
     ESP_LOGI(TAG, "Content length  => %d", req->content_len);
-    char buf[100]; // 1000 byte chunk
-    char content[bufferLength];
-    strcpy(content, ""); // Fill initial
+    char buf[100];
+    char content[bufferLength + 1];
+    content[0] = '\0'; // C-04: init, no uninit strcat
 
     while (remaining > 0)
     {

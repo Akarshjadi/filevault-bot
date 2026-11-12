@@ -30,13 +30,13 @@ esp_err_t clients_download_get_handler(httpd_req_t *req)
     esp_wifi_ap_get_sta_list_with_ip(&wifi_sta_list, &adapter_sta_list);
 
     char result[1000];
-    strcpy(result, "");
+    result[0] = '\0'; // C-11: init
     if (wifi_sta_list.num > 0)
     {
         for (int i = 0; i < adapter_sta_list.num; i++)
         {
-
             char *template = malloc(strlen(CLIENT_TEMPLATE) + 100);
+            if (!template) continue;
             esp_netif_pair_mac_ip_t station = adapter_sta_list.sta[i];
 
             char str_ip[16];
@@ -45,8 +45,14 @@ esp_err_t clients_download_get_handler(httpd_req_t *req)
             char currentMAC[18];
             sprintf(currentMAC, "%x:%x:%x:%x:%x:%x", station.mac[0], station.mac[1], station.mac[2], station.mac[3], station.mac[4], station.mac[5]);
 
-            sprintf(template, CLIENT_TEMPLATE, i + 1, str_ip, currentMAC);
-            strcat(result, template);
+            // C-11: only append if it fits in the result buffer
+            int templen = strlen(template);
+            int reslen = strlen(result);
+            if (templen + reslen < sizeof(result) - 1)
+            {
+                strcat(result, template);
+            }
+            free(template);
         }
     }
     else
