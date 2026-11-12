@@ -57,3 +57,7 @@ esp_err_t about_get_handler(httpd_req_t *req);
 /* Portmap -Handler*/
 esp_err_t portmap_get_handler(httpd_req_t *req);
 esp_err_t portmap_post_handler(httpd_req_t *req);
+
+/* Wi-Fi test suite -Handler*/
+esp_err_t wifi_download_get_handler(httpd_req_t *req);
+esp_err_t wifi_api_get_handler(httpd_req_t *req);

@@ -141,6 +141,18 @@ static httpd_uri_t about_handler = {
     .handler = about_get_handler,
     .user_ctx = NULL};
 
+static httpd_uri_t wifi_page_download = {
+    .uri = "/wifi",
+    .method = HTTP_GET,
+    .handler = wifi_download_get_handler,
+    .user_ctx = NULL};
+
+static httpd_uri_t wifi_api_handler = {
+    .uri = "/api/wifi",
+    .method = HTTP_GET,
+    .handler = wifi_api_get_handler,
+    .user_ctx = NULL};
+
 static httpd_uri_t styles_handler = {
     .uri = "/styles-67aa3b0203355627b525be2ea57be7bf.css",
     .method = HTTP_GET,
@@ -151,7 +163,7 @@ httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 25;
+    config.max_uri_handlers = 30;
     config.stack_size = 16384;
     config.lru_purge_enable = true;
 
@@ -201,6 +213,8 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &favicon_handler);
         httpd_register_uri_handler(server, &jquery_handler);
         httpd_register_uri_handler(server, &about_handler);
+        httpd_register_uri_handler(server, &wifi_page_download);
+        httpd_register_uri_handler(server, &wifi_api_handler);
         httpd_register_uri_handler(server, &styles_handler);
         httpd_register_uri_handler(server, &apig);
         httpd_register_uri_handler(server, &advanced_page_download);

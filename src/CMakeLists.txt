@@ -1,6 +1,7 @@
 FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
 
-idf_component_register(SRCS ${app_sources} INCLUDE_DIRS ".")
+idf_component_register(SRCS ${app_sources} INCLUDE_DIRS "."
+                    REQUIRES cmd_wifi cmd_router cmd_system cmd_nvs)
 
 target_add_binary_data(${COMPONENT_TARGET} "pages/favicon.ico" BINARY)
 target_add_binary_data(${COMPONENT_TARGET} "pages/styles-67aa3b0203355627b525be2ea57be7bf.css" TEXT)
@@ -16,6 +17,7 @@ target_add_binary_data(${COMPONENT_TARGET} "pages/clients.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/ota.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/otalog.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/about.html" TEXT)
+target_add_binary_data(${COMPONENT_TARGET} "pages/wifi.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/portmap_start.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/portmap_end.html" TEXT)
 target_add_binary_data(${COMPONENT_TARGET} "pages/jquery-8a1045d9cbf50b52a0805c111ba08e94.js" TEXT)

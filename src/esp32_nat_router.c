@@ -819,6 +819,7 @@ void app_main(void)
     register_system();
 
     register_router();
+    register_wifi();
     fillMac();
     get_config_param_str("ssid", &ssid);
     if (ssid == NULL)
