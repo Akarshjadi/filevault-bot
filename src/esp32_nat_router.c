@@ -355,34 +355,20 @@ void set3rdOctet()
 
 void setHostName()
 {
-    char *hostName = NULL;
-    get_config_param_str("hostname", &hostName);
-    if (hostName == NULL || strlen(hostName) == 0 || strlen(hostName) >= 250)
-    {
-        esp_random();
-        ESP_LOGI(TAG, "No hostname set. Generating and setting random");
-        // Generate a random number between 1000 and 9999
-        int random_number = esp_random() % 9000 + 1000;
-        hostName = (char *)malloc(14 * sizeof(char));
-        sprintf(hostName, "god");
-        nvs_handle_t nvs;
-        ESP_ERROR_CHECK(nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs));
-        ESP_ERROR_CHECK(nvs_set_str(nvs, "hostname", hostName));
-        ESP_ERROR_CHECK(nvs_commit(nvs));
-    }
-    ESP_LOGI(TAG, "Setting hostname to: %s", hostName);
+    const char *default_name = "god";
+    ESP_LOGI(TAG, "Setting hostname to: %s", default_name);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_err_t err = esp_netif_set_hostname(sta_netif, hostName);
+    esp_err_t err = esp_netif_set_hostname(sta_netif, default_name);
     if (err != ESP_OK)
     {
-        ESP_LOGW(TAG, "Invalid hostname (%s) detected. Will be resetted", hostName);
-        nvs_handle_t nvs;
-        ESP_ERROR_CHECK(nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs));
-        ESP_ERROR_CHECK(nvs_erase_key(nvs, "hostname"));
-        ESP_ERROR_CHECK(nvs_commit(nvs));
-        esp_restart();
+        ESP_LOGW(TAG, "Invalid hostname (%s) detected.", default_name);
     }
-    free(hostName);
+    // Always persist to NVS
+    nvs_handle_t nvs;
+    ESP_ERROR_CHECK(nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs));
+    ESP_ERROR_CHECK(nvs_set_str(nvs, "hostname", default_name));
+    ESP_ERROR_CHECK(nvs_commit(nvs));
+    nvs_close(nvs);
 }
 
 void fillMac()
