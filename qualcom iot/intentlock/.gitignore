@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data: raw and interim data are never committed. Processed data is
+# regenerated from manifests; only manifests and splits are versioned.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# Models and exports (versioned metadata is committed under models/*.json)
+models/*.pt
+models/*.onnx
+models/*.eim
+models/*.tflite
+
+# Secrets
+.env
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

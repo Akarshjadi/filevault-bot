@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intentlock"
+version = "0.1.0"
+description = "Temporal multimodal intent verification for edge AI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "IntentLock contributors" }]
+
+# Runtime dependencies are deliberately minimal. Heavy ML backends (torch) and
+# hardware backends are optional extras so that the core pipeline (event engine,
+# fusion, state machine, safety gate, simulator) installs and tests on any machine.
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+# Training / model backends.
+train = [
+    "torch>=2.1",
+    "scikit-learn>=1.3",
+]
+# Audio feature extraction beyond the built-in NumPy implementation.
+audio = ["soundfile>=0.12", "scipy>=1.11"]
+# Vision backends.
+vision = ["opencv-python-headless>=4.9", "pillow>=10.0"]
+# Edge export / on-device inference (installed on the UNO Q target).
+edge = ["edge_impulse_linux>=1.0"]
+# Development tooling.
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "black>=24.1",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+    "types-PyYAML",
+]
+
+[project.scripts]
+intentlock = "intentlock.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+intentlock = ["py.typed"]
+
+# ---------------------------------------------------------------------------
+# Tooling configuration
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "TID"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"] # asserts are the point of tests
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+mypy_path = "src"
+# Third-party libs without stubs that we cannot control.
+[[tool.mypy.overrides]]
+module = ["torch.*", "sklearn.*", "cv2.*", "soundfile.*", "edge_impulse_linux.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: long-running tests",
+    "hardware: requires physical hardware",
+]
+filterwarnings = ["error::DeprecationWarning:intentlock.*"]
+
+[tool.coverage.run]
+source = ["intentlock"]
+branch = true

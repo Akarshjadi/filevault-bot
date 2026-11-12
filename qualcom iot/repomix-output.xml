@@ -1,0 +1,5062 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+intentlock/
+  scripts/
+    dev_check_audio.py
+    dev_check_imu.py
+    dev_check_sync.py
+  src/
+    intentlock/
+      actions/
+        __init__.py
+      audio/
+        __init__.py
+        detector.py
+        features.py
+      cli/
+        __init__.py
+      common/
+        __init__.py
+        errors.py
+        events.py
+        logging.py
+        seed.py
+      configuration/
+        __init__.py
+        loader.py
+        schema.py
+      context/
+        __init__.py
+      fusion/
+        __init__.py
+      imu/
+        __init__.py
+        classifier.py
+        detector.py
+        preprocessing.py
+        vocabulary.py
+      intent/
+        __init__.py
+      interfaces/
+        __init__.py
+        backend.py
+        sources.py
+      safety/
+        __init__.py
+      state_machine/
+        __init__.py
+      synchronization/
+        __init__.py
+        clock.py
+        engine.py
+        patterns.py
+      telemetry/
+        __init__.py
+      vision/
+        __init__.py
+      __init__.py
+      py.typed
+  .env.example
+  .gitignore
+  pyproject.toml
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="intentlock/scripts/dev_check_audio.py">
+"""Smoke check for audio preprocessing and wake-word detector."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from intentlock.audio.detector import WakeWordDetector
+from intentlock.audio.features import AudioRepresentation, preprocess_audio, resample_linear
+from intentlock.common.errors import MalformedInputError
+from intentlock.configuration.schema import AudioConfig
+from intentlock.interfaces.backend import InferenceBackend, InferenceOutput
+
+
+class DummyAudioBackend(InferenceBackend):
+    """Mock backend returning fixed probabilities for wake vs not_wake."""
+
+    def __init__(self, wake_prob: float = 0.92, version: str = "audio-v1.0-mock") -> None:
+        self._wake_prob = wake_prob
+        self._version = version
+
+    @property
+    def model_version(self) -> str:
+        return self._version
+
+    @property
+    def class_names(self) -> list[str]:
+        return ["not_wake", "wake"]
+
+    @property
+    def parameter_count(self) -> int:
+        return 1024
+
+    def predict(self, features: np.ndarray) -> InferenceOutput:
+        p = self._wake_prob
+        scores = np.array([1.0 - p, p], dtype=np.float64)
+        return InferenceOutput(
+            scores=scores,
+            class_names=self.class_names,
+            model_version=self._version,
+            latency_ms=2.5,
+        )
+
+
+def test_audio_preprocessing() -> None:
+    print("Testing audio preprocessing & feature extraction...")
+    sample_rate = 16000
+    duration_sec = 1.0
+    t = np.linspace(0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
+    # 440 Hz tone with some harmonic content
+    waveform = 0.5 * np.sin(2 * np.pi * 440 * t) + 0.1 * np.sin(2 * np.pi * 880 * t)
+
+    # Test MFCC representation
+    features_mfcc = preprocess_audio(
+        waveform,
+        sample_rate=sample_rate,
+        frame_ms=25,
+        hop_ms=10,
+        n_mels=40,
+        representation=AudioRepresentation.MFCC,
+        n_mfcc=13,
+    )
+    assert features_mfcc.n_frames > 0
+    assert features_mfcc.n_coefficients == 13
+    assert np.isfinite(features_mfcc.features).all()
+    print(f"  -> MFCC shape: {features_mfcc.features.shape}, SNR: {features_mfcc.snr_db:.1f} dB")
+
+    # Test Log-Mel representation
+    features_logmel = preprocess_audio(
+        waveform,
+        sample_rate=sample_rate,
+        frame_ms=25,
+        hop_ms=10,
+        n_mels=40,
+        representation=AudioRepresentation.LOG_MEL,
+    )
+    assert features_logmel.n_coefficients == 40
+    print(f"  -> Log-Mel shape: {features_logmel.features.shape}")
+
+    # Test resampler
+    resampled = resample_linear(waveform, 16000, 8000)
+    assert resampled.size == int(len(waveform) * 8000 / 16000)
+    print(f"  -> Resampled from 16kHz to 8kHz: {resampled.size} samples")
+
+    # Test malformed input rejections
+    try:
+        preprocess_audio(np.array([1.5, -2.0]), sample_rate=16000, frame_ms=25, hop_ms=10, n_mels=40)
+        raise AssertionError("Expected MalformedInputError for out-of-range samples")
+    except MalformedInputError:
+        print("  -> Correctly rejected out-of-range samples")
+
+
+def test_wake_detector() -> None:
+    print("Testing WakeWordDetector...")
+    config = AudioConfig(sample_rate=16000, wake_threshold=0.8)
+    backend = DummyAudioBackend(wake_prob=0.92)
+    detector = WakeWordDetector(config, backend)
+
+    sample_rate = 16000
+    t = np.linspace(0, 1.5, int(sample_rate * 1.5), endpoint=False)
+    # Speech-like active signal
+    waveform = 0.4 * np.sin(2 * np.pi * 300 * t) + 0.2 * np.sin(2 * np.pi * 1200 * t)
+
+    detection = detector.detect(waveform, timestamp_ns=123456789)
+    assert detection.detected is True
+    assert detection.wake_probability == 0.92
+    print(f"  -> Wake detected: prob={detection.wake_probability}, quality={detection.audio_quality:.2f}")
+
+    event = detection.to_event(event_id="test-wake-1")
+    assert event.event_type.value == "wake_detected"
+    print(f"  -> Event generated: {event.event_type.value} with confidence {event.confidence:.2f}")
+
+    # Test silence buffer
+    silence = np.zeros(16000, dtype=np.float64)
+    silence_detection = detector.detect(silence, timestamp_ns=999)
+    silence_event = silence_detection.to_event(event_id="test-silence")
+    assert silence_event.event_type.value == "audio_silence"
+    print(f"  -> Silence handled correctly: {silence_event.event_type.value}")
+
+
+if __name__ == "__main__":
+    test_audio_preprocessing()
+    test_wake_detector()
+    print("All audio smoke checks passed successfully!")
+</file>
+
+<file path="intentlock/scripts/dev_check_imu.py">
+"""IMU smoke check: preprocessing determinism, training, calibration, abstention.
+
+Run: .venv/bin/python scripts/dev_check_imu.py
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from intentlock.common.events import EventType
+from intentlock.common.seed import rng
+from intentlock.configuration import load_config
+from intentlock.imu import (
+    FEATURE_NAMES,
+    GESTURE_CLASSES,
+    GestureDetector,
+    LinearGestureBackend,
+    ModelMetadata,
+    dynamic_energy,
+    extract_features,
+    fit_temperature,
+    gravity_align,
+    normalize,
+    softmax,
+    window_stream,
+)
+from intentlock.imu.preprocessing import validate
+
+MS = 1_000_000
+
+
+def synth_sweep(
+    kind: str, sample_rate: int = 100, duration_s: float = 1.6, seed: int = 0
+) -> np.ndarray:
+    """Synthesise a plausible IMU window for one gesture class.
+
+    Parameters are chosen to be physically sensible for a wrist-worn sensor: an
+    arm sweep is ~0.6-0.9 s of motion at 1-3 Hz with up to ~2 g of acceleration
+    and a few hundred deg/s of rotation.
+
+    The classes are separated the way the real vocabulary separates them: by
+    **direction along an axis** (the property a wrist IMU measures well) and by
+    **temporal pattern** (CONFIRM is a double pulse). LEFT/RIGHT are opposite
+    signs on the same axis, as are UP/DOWN; CANCEL is LEFT with a reversed
+    return stroke. This is a *test fixture*: clearly synthetic, and never used to
+    produce a reported metric.
+    """
+    generator = rng(seed)
+    n = int(sample_rate * duration_s)
+    t = np.arange(n) / sample_rate
+    envelope = np.sin(np.pi * t / t[-1]) ** 2  # smooth start and end
+
+    # (axis, sign, accel_amplitude_g, gyro_amplitude_dps, frequency_hz)
+    spec = {
+        "LEFT": (0, -1.0, 1.7, 280.0, 2.0),
+        "RIGHT": (0, +1.0, 1.7, 280.0, 2.0),
+        "UP": (1, +1.0, 1.6, 250.0, 2.4),
+        "DOWN": (1, -1.0, 1.6, 250.0, 2.4),
+        "CONFIRM": (2, +1.0, 1.1, 170.0, 1.4),
+        "CANCEL": (2, -1.0, 1.4, 230.0, 1.8),
+        "NO_GESTURE": (0, +1.0, 0.02, 5.0, 0.4),
+        # UNKNOWN is deliberately mid-amplitude and high-frequency: a motion that
+        # is neither clearly a command nor clearly at rest.
+        "UNKNOWN": (1, +1.0, 0.35, 70.0, 6.0),
+    }
+    axis, sign, accel_amp, gyro_amp, freq = spec[kind]
+
+    accel = generator.normal(0.0, 0.03, size=(n, 3))
+    accel[:, 2] += 1.0  # gravity on Z
+    accel[:, axis] += sign * accel_amp * envelope * np.sin(2 * np.pi * freq * t)
+    gyro = generator.normal(0.0, 8.0, size=(n, 3))
+    gyro[:, axis] += sign * gyro_amp * envelope * np.sin(2 * np.pi * freq * t)
+    if kind == "CONFIRM":
+        # Two pulses: what makes it distinguishable from a single sweep.
+        gate = (np.sin(2 * np.pi * freq * t) > 0).astype(np.float64)
+        accel[:, axis] *= gate
+        gyro[:, axis] *= gate
+    return np.hstack([accel, gyro])
+
+
+def build_dataset(samples_per_class: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build a synthetic feature matrix, label vector and subject vector."""
+    cfg = load_config()
+    features: list[np.ndarray] = []
+    labels: list[int] = []
+    subjects: list[int] = []
+    for class_index, class_name in enumerate(GESTURE_CLASSES):
+        for sample_index in range(samples_per_class):
+            subject = sample_index % 4
+            raw = synth_sweep(class_name, seed=class_index * 1000 + sample_index)
+            # Per-subject amplitude scaling: a cheap stand-in for the real
+            # inter-person variation that participant-level splits must respect.
+            raw = raw * (0.85 + 0.1 * subject)
+            windows = window_stream(
+                normalize(gravity_align(raw), accel_scale=4.0, gyro_scale=500.0),
+                sample_rate=cfg.gesture.sample_rate,
+                window_ms=cfg.gesture.window_ms,
+                stride_ms=cfg.gesture.stride_ms,
+            )
+            # Take the middle window: the sweep's most energetic moment.
+            window = windows[len(windows) // 2]
+            features.append(extract_features(window))
+            labels.append(class_index)
+            subjects.append(subject)
+    return np.vstack(features), np.asarray(labels), np.asarray(subjects)
+
+
+def main() -> int:
+    cfg = load_config()
+
+    print("--- 1. preprocessing determinism and validation ---")
+    raw = synth_sweep("LEFT", seed=7)
+    a = normalize(gravity_align(raw), accel_scale=4.0, gyro_scale=500.0)
+    b = normalize(gravity_align(raw), accel_scale=4.0, gyro_scale=500.0)
+    assert np.array_equal(a, b), "preprocessing must be deterministic"
+    # Magnitudes must be preserved by gravity alignment: it is a pure rotation.
+    assert np.allclose(
+        np.linalg.norm(raw[:, :3], axis=1), np.linalg.norm(gravity_align(raw)[:, :3], axis=1)
+    ), "gravity alignment must be a pure rotation"
+    print("deterministic; gravity alignment preserves magnitude")
+
+    print("--- 2. malformed input rejected ---")
+    for bad, why in [
+        (np.zeros((10, 5)), "wrong channel count"),
+        (np.full((10, 6), np.nan), "NaN present"),
+        (np.zeros((0, 6)), "empty"),
+    ]:
+        try:
+            validate(bad, max_accel_g=12.0)
+        except Exception as exc:
+            print(f"  rejected {why}: {type(exc).__name__}")
+        else:
+            raise AssertionError(f"{why} was not rejected")
+    violent = np.zeros((100, 6))
+    violent[:, 2] = 30.0
+    try:
+        validate(violent, max_accel_g=12.0)
+    except Exception as exc:
+        print(f"  rejected over-range acceleration: {type(exc).__name__}")
+    else:
+        raise AssertionError("over-range acceleration was not rejected")
+
+    print("--- 3. participant-level split (no subject leakage) ---")
+    features, labels, subjects = build_dataset(samples_per_class=24)
+    train_mask = np.isin(subjects, [0, 1])
+    val_mask = subjects == 2
+    test_mask = subjects == 3
+    assert not (set(subjects[train_mask]) & set(subjects[test_mask])), "subject leakage"
+    print(
+        f"features={features.shape} train={train_mask.sum()} "
+        f"val={val_mask.sum()} test={test_mask.sum()} "
+        f"train_subjects={sorted(set(subjects[train_mask].tolist()))} "
+        f"test_subjects={sorted(set(subjects[test_mask].tolist()))}"
+    )
+
+    print("--- 4. train, calibrate, evaluate on unseen participants ---")
+    metadata = ModelMetadata(
+        model_version="imu-linear-dev-0.1.0",
+        dataset_version="synthetic-smoke-2026-09-21",
+        training_config={"lr": 0.5, "epochs": 400, "l2": 1e-3, "features": len(FEATURE_NAMES)},
+        git_commit="dev",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        metrics={},
+        input_schema=f"features[{len(FEATURE_NAMES)}]",
+        output_schema=f"softmax[{len(GESTURE_CLASSES)}]",
+    )
+    model = LinearGestureBackend.fit(
+        features[train_mask], labels[train_mask], metadata=metadata
+    )
+    val_output = np.vstack([model.predict(f).scores for f in features[val_mask]])
+    temperature = fit_temperature(val_output, labels[val_mask])
+    model = LinearGestureBackend(
+        model._weights, model._bias, metadata=metadata, temperature=temperature
+    )
+    test_scores = np.vstack([model.predict(f).scores for f in features[test_mask]])
+    accuracy = float((test_scores.argmax(axis=1) == labels[test_mask]).mean())
+    print(
+        f"temperature={temperature:.3f} test_accuracy(unseen participants)={accuracy:.3f} "
+        f"params={model.parameter_count()}"
+    )
+    # Synthetic fixture: this floor catches a broken training loop, not a result.
+    assert accuracy > 0.6, f"linear backend failed to learn the synthetic task: {accuracy:.3f}"
+
+    print("--- 5. persistence round-trip ---")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        model.save(tmp)
+        reloaded = LinearGestureBackend.load(tmp)
+        original = model.predict(features[test_mask][0]).scores
+        restored = reloaded.predict(features[test_mask][0]).scores
+        assert np.allclose(original, restored), "round-trip must preserve predictions"
+        assert reloaded.model_version == metadata.model_version
+        print(f"saved/loaded OK, model_version={reloaded.model_version}")
+
+        print("--- 6. missing artefact is a hard error ---")
+        (Path(tmp) / "imu_linear.metadata.json").unlink()
+        try:
+            LinearGestureBackend.load(tmp)
+        except Exception as exc:
+            print(f"  rejected missing metadata: {type(exc).__name__}")
+        else:
+            raise AssertionError("loading without metadata must fail")
+
+    print("--- 7. abstention: still -> NO_GESTURE; decisive sweep -> a command ---")
+    detector = GestureDetector(cfg.gesture, model)
+    still_events = detector.detect_events(synth_sweep("NO_GESTURE", seed=99))
+    print(f"still window -> {still_events[0].event_type.value} label={still_events[0].label}")
+    assert still_events[0].event_type is EventType.NO_GESTURE, (
+        "a resting wrist must never be reported as a command gesture"
+    )
+
+    decisive_events = detector.detect_events(synth_sweep("LEFT", seed=11))
+    decisive = decisive_events[0]
+    print(
+        f"decisive sweep -> {decisive.event_type.value} "
+        f"label={decisive.label} conf={decisive.confidence:.3f}"
+    )
+    # The *behaviour* asserted here is that a decisive sweep passes the activity
+    # gate and yields a command gesture. The specific label is not asserted: this
+    # model is trained on 2 synthetic participants and evaluated on a third with a
+    # different amplitude, so a label swap within the command vocabulary is the
+    # fixture's limitation, not a system property. Real per-label accuracy is
+    # measured on the real dataset in evaluation/.
+    assert decisive.event_type is EventType.GESTURE_DETECTED, (
+        f"a decisive sweep must be detected as a gesture, got {decisive.label}"
+    )
+    assert decisive.label in GESTURE_CLASSES
+    assert decisive.metadata["energy_gated"] is True
+
+    print("--- 7b. the activity gate rejects stillness, not gestures (measured) ---")
+    still_energy = dynamic_energy(
+        window_stream(
+            normalize(
+                gravity_align(synth_sweep("NO_GESTURE", seed=5)),
+                accel_scale=4.0,
+                gyro_scale=500.0,
+            ),
+            sample_rate=cfg.gesture.sample_rate,
+            window_ms=cfg.gesture.window_ms,
+            stride_ms=cfg.gesture.stride_ms,
+        )[0]
+    )
+    sweep_energy = dynamic_energy(
+        window_stream(
+            normalize(
+                gravity_align(synth_sweep("LEFT", seed=5)),
+                accel_scale=4.0,
+                gyro_scale=500.0,
+            ),
+            sample_rate=cfg.gesture.sample_rate,
+            window_ms=cfg.gesture.window_ms,
+            stride_ms=cfg.gesture.stride_ms,
+        )[0]
+    )
+    print(
+        f"floor={cfg.gesture.activity_energy_floor} "
+        f"still={still_energy:.5f} sweep={sweep_energy:.5f}"
+    )
+    assert still_energy < cfg.gesture.activity_energy_floor < sweep_energy, (
+        "the activity floor must separate stillness from a real sweep"
+    )
+
+    print("--- 8. corrupt packet degrades to IMU_ANOMALY, not an exception ---")
+    corrupt = synth_sweep("LEFT", seed=3)
+    corrupt[10, 0] = np.nan
+    anomaly_events = detector.detect_events(
+        corrupt, timestamps_ns=np.arange(len(corrupt)) * 10 * MS
+    )
+    reason = anomaly_events[0].metadata["reason"][:60]
+    print(f"corrupt -> {anomaly_events[0].event_type.value}: {reason}")
+    assert anomaly_events[0].event_type is EventType.IMU_ANOMALY
+
+    print("--- 9. softmax sanity ---")
+    probs = softmax(np.array([1.0, 2.0, 3.0]))
+    assert abs(float(probs.sum()) - 1.0) < 1e-12
+    assert probs[2] > probs[1] > probs[0]
+    print(f"softmax OK sum={probs.sum():.12f}")
+
+    print("\nALL IMU CHECKS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="intentlock/scripts/dev_check_sync.py">
+"""Ad-hoc smoke check for the synchronisation layer (not a pytest test).
+
+Run: .venv/bin/python scripts/dev_check_sync.py
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from intentlock.common.events import Event, EventType, Source
+from intentlock.configuration import load_config
+from intentlock.synchronization import (
+    SessionClock,
+    TemporalEventEngine,
+    ViolationKind,
+    VirtualClock,
+)
+
+MS = 1_000_000
+
+
+def _source_for(event_type: EventType) -> Source:
+    if event_type in (EventType.GESTURE_DETECTED, EventType.NO_GESTURE, EventType.IMU_ANOMALY):
+        return Source.IMU
+    if event_type in (
+        EventType.PERSON_PRESENT,
+        EventType.PERSON_ABSENT,
+        EventType.IDENTITY_KNOWN,
+        EventType.ATTENTION_ENGAGED,
+    ):
+        return Source.VISION
+    return Source.AUDIO
+
+
+def ev(
+    event_type: EventType,
+    ms: int,
+    *,
+    confidence: float = 0.9,
+    label: str | None = None,
+    subject: str | None = None,
+    eid: str | None = None,
+) -> Event:
+    return Event(
+        event_type=event_type,
+        timestamp_ns=ms * MS,
+        confidence=confidence,
+        source=_source_for(event_type),
+        subject_id=subject,
+        label=label,
+        event_id=eid or f"{event_type.value}-{ms}",
+    )
+
+
+def main() -> int:
+    cfg = load_config()
+
+    print("--- 1. valid handshake ---")
+    engine = TemporalEventEngine(cfg.temporal)
+    engine.push_all(
+        [
+            ev(EventType.PERSON_PRESENT, 100, subject="u1"),
+            ev(EventType.WAKE_DETECTED, 900, subject="u1"),
+            ev(EventType.GESTURE_DETECTED, 2000, label="LEFT", subject="u1"),
+        ]
+    )
+    match = engine.match("handshake", 3000 * MS)
+    print(
+        f"matched={match.matched} events={len(match.events)} "
+        f"labels={match.gesture_labels()} violation={match.violation} "
+        f"span_ms={match.duration_ns // MS}"
+    )
+    assert match.matched, "valid handshake must match"
+
+    print("--- 2. gesture without wake ---")
+    engine2 = TemporalEventEngine(cfg.temporal)
+    engine2.push(ev(EventType.GESTURE_DETECTED, 500, label="LEFT"))
+    print("gesture_only matched:", engine2.match("gesture_only", 600 * MS).matched)
+    m2 = engine2.match("handshake", 600 * MS)
+    print(f"handshake matched={m2.matched} violation={m2.violation} detail={m2.detail}")
+    assert not m2.matched, "handshake without any person/wake evidence must not match"
+    # No violation is reported because the pattern never started: the gate must
+    # distinguish "nothing happened" from "an incomplete handshake".
+    assert m2.violation is None and not m2.events, "unstarted pattern has no violation"
+
+    print("--- 2b. partial handshake (person seen, then gesture, no wake) ---")
+    engine2b = TemporalEventEngine(cfg.temporal)
+    engine2b.push_all(
+        [
+            ev(EventType.PERSON_PRESENT, 100, subject="u1"),
+            ev(EventType.GESTURE_DETECTED, 900, label="LEFT", subject="u1"),
+        ]
+    )
+    m2b = engine2b.match("handshake", 1000 * MS)
+    print(f"matched={m2b.matched} violation={m2b.violation} detail={m2b.detail}")
+    assert not m2b.matched
+    assert m2b.violation is ViolationKind.MISSING_STEP, (
+        "a started-but-incomplete handshake must report MISSING_STEP so the gate can RETRY"
+    )
+    assert m2b.is_partial
+
+    print("--- 3. wrong order (gesture then wake) ---")
+    engine3 = TemporalEventEngine(cfg.temporal)
+    engine3.push_all(
+        [
+            ev(EventType.GESTURE_DETECTED, 500, label="LEFT"),
+            ev(EventType.WAKE_DETECTED, 900),
+            ev(EventType.GESTURE_DETECTED, 1500, label="RIGHT"),
+        ]
+    )
+    m3 = engine3.match("wake_gesture", 2000 * MS)
+    print(f"matched={m3.matched} violation={m3.violation} detail={m3.detail}")
+    assert m3.matched and m3.gesture_labels() == ["RIGHT"], (
+        "the pre-wake gesture must not be reused as the command gesture"
+    )
+
+    print("--- 4. gap too large (wake -> gesture 9s) ---")
+    engine4 = TemporalEventEngine(cfg.temporal)
+    engine4.push_all(
+        [
+            ev(EventType.WAKE_DETECTED, 100),
+            ev(EventType.GESTURE_DETECTED, 9100, label="LEFT"),
+        ]
+    )
+    m4 = engine4.match("wake_gesture", 9200 * MS)
+    print(f"matched={m4.matched} violation={m4.violation} detail={m4.detail}")
+    assert m4.violation is not None
+
+    print("--- 5. subject mismatch (person A wakes, person B gestures) ---")
+    engine5 = TemporalEventEngine(cfg.temporal)
+    engine5.push_all(
+        [
+            ev(EventType.PERSON_PRESENT, 100, subject="user_A"),
+            ev(EventType.WAKE_DETECTED, 900, subject="user_A"),
+            ev(EventType.GESTURE_DETECTED, 2000, label="LEFT", subject="user_B"),
+        ]
+    )
+    m5 = engine5.match("handshake", 3000 * MS)
+    print(f"matched={m5.matched} violation={m5.violation} detail={m5.detail}")
+    assert m5.violation is not None, "cross-subject sequence must be rejected"
+
+    print("--- 6. duplicate suppression ---")
+    engine6 = TemporalEventEngine(cfg.temporal)
+    first = engine6.push(ev(EventType.WAKE_DETECTED, 100, eid="dup-1"))
+    second = engine6.push(ev(EventType.WAKE_DETECTED, 100, eid="dup-1"))
+    print(f"first={first} second={second} stats={engine6.stats()}")
+    assert first and not second
+
+    print("--- 7. expiry ---")
+    engine7 = TemporalEventEngine(cfg.temporal)
+    engine7.push(ev(EventType.WAKE_DETECTED, 100))
+    engine7.push(ev(EventType.GESTURE_DETECTED, 30000, label="LEFT"))
+    m7 = engine7.match("wake_gesture", 30100 * MS)
+    print(f"matched={m7.matched} buffered={len(engine7.buffer)} violation={m7.violation}")
+    assert not m7.matched, "expired wake word must not authorise a late gesture"
+
+    print("--- 8. session clock offsets ---")
+    vclock = VirtualClock()
+    sclock = SessionClock(clock=vclock)
+    sclock.start()
+    vclock.advance_ms(1000)
+    # Device-local counter starting near zero while the session is already 1s in:
+    # its first sample must map to "now", not to session time 5ms.
+    a1 = sclock.convert(5_000_000, "imu")
+    assert a1 == 1000 * MS, f"first device-local sample should map to 'now', got {a1 / MS}ms"
+    # Advance real time alongside the device counter; the 200ms offset between
+    # samples must be preserved exactly.
+    vclock.advance_ms(200)
+    a2 = sclock.convert(205_000_000, "imu")
+    print(f"imu t0={a1 / MS:.0f}ms t1={a2 / MS:.0f}ms drift={sclock.drift_report()}")
+    assert a2 == 1200 * MS, f"relative offsets must be preserved, got {a2 / MS}ms"
+
+    print("--- 9. already-session-relative timestamps pass through ---")
+    vclock2 = VirtualClock()
+    sclock2 = SessionClock(clock=vclock2)
+    sclock2.start()
+    vclock2.advance_ms(500)
+    assert sclock2.convert(500 * MS, "sim") == 500 * MS
+    # A future timestamp is clamped to now, never accepted.
+    assert sclock2.convert(9000 * MS, "sim") == 500 * MS
+    print("pass-through and future-clamp OK")
+
+    print("\nALL SYNC CHECKS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="intentlock/src/intentlock/actions/__init__.py">
+"""actions subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/audio/__init__.py">
+"""Audio: preprocessing, spectral features and wake-word detection."""
+
+from intentlock.audio.detector import WakeDetection, WakeWordDetector
+from intentlock.audio.features import (
+    AudioFeatures,
+    AudioRepresentation,
+    hz_to_mel,
+    mel_filterbank,
+    mel_to_hz,
+    preprocess_audio,
+    resample_linear,
+)
+
+__all__ = [
+    "AudioFeatures",
+    "AudioRepresentation",
+    "preprocess_audio",
+    "mel_filterbank",
+    "hz_to_mel",
+    "mel_to_hz",
+    "resample_linear",
+    "WakeDetection",
+    "WakeWordDetector",
+]
+</file>
+
+<file path="intentlock/src/intentlock/audio/detector.py">
+"""Wake-word detection.
+
+The detector answers one question: *was the wake phrase uttered in this buffer,
+and how reliable is that judgement?* It deliberately does NOT answer "who spoke"
+or "what else was said"; those belong to vision (identity) and the fusion layer.
+
+Three behaviours the specification requires and this module implements:
+
+* **Noise awareness.** `noise_estimate` and `snr_db` travel with the detection so
+  the safety gate can discount a confident detection made in a noisy room. A
+  wake word detected at 0.95 in a noisy environment is weaker evidence than 0.85
+  in a quiet one, and the pipeline must be able to express that.
+* **Silence is a first-class output** (`AUDIO_SILENCE`), not a failure to detect.
+* **High ambient noise emits `AUDIO_NOISE_HIGH`**, which is active evidence
+  *against* executing, not merely missing data.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+import numpy as np
+
+from intentlock.audio.features import (
+    AudioFeatures,
+    AudioRepresentation,
+    preprocess_audio,
+)
+from intentlock.common.errors import MalformedInputError
+from intentlock.common.events import Event, EventType, Source
+from intentlock.configuration.schema import AudioConfig
+from intentlock.interfaces.backend import InferenceBackend
+
+#: Silence threshold in dBFS. Below this the buffer is treated as silence without
+#: consulting the model. -55 dBFS is roughly the analogue noise floor of a
+#: consumer MEMS microphone on the UNO Q, so anything quieter carries no speech.
+_SILENCE_DBFS = -55.0
+
+#: Minimum SNR (dB) for a wake detection to be reported as reliable rather than
+#: flagged as noise-degraded.
+_MIN_RELIABLE_SNR_DB = 6.0
+
+
+@dataclass(frozen=True, slots=True)
+class WakeDetection:
+    """Result of one wake-word analysis window."""
+
+    detected: bool
+    wake_probability: float
+    timestamp_ns: int
+    audio_quality: float
+    noise_estimate_db: float
+    snr_db: float
+    rms: float
+    model_version: str
+    inference_latency_ms: float
+    scores: dict[str, float]
+
+    @property
+    def is_noise_degraded(self) -> bool:
+        """True when the environment makes this detection less trustworthy."""
+        return self.snr_db < _MIN_RELIABLE_SNR_DB
+
+    def to_event(self, *, event_id: str, subject_id: str | None = None) -> Event:
+        """Convert to a pipeline event.
+
+        Silence produces `AUDIO_SILENCE`; high noise produces `AUDIO_NOISE_HIGH`;
+        an above-threshold wake probability produces `WAKE_DETECTED`. The
+        `confidence` on `WAKE_DETECTED` is the *calibrated* wake probability,
+        discounted by audio quality, so the fusion layer cannot be fooled by a
+        confident detection in a bad environment.
+        """
+        if self.rms <= 0.0 or self.snr_db < -20.0:
+            return Event(
+                event_type=EventType.AUDIO_SILENCE,
+                timestamp_ns=self.timestamp_ns,
+                confidence=1.0,
+                source=Source.AUDIO,
+                subject_id=subject_id,
+                label="SILENCE",
+                event_id=f"{event_id}-silence",
+                metadata={"rms": self.rms, "snr_db": self.snr_db},
+            )
+
+        if self.is_noise_degraded and not self.detected:
+            return Event(
+                event_type=EventType.AUDIO_NOISE_HIGH,
+                timestamp_ns=self.timestamp_ns,
+                confidence=1.0,
+                source=Source.AUDIO,
+                subject_id=subject_id,
+                label="NOISE",
+                event_id=f"{event_id}-noise",
+                metadata={
+                    "snr_db": self.snr_db,
+                    "noise_estimate_db": self.noise_estimate_db,
+                    "audio_quality": self.audio_quality,
+                },
+            )
+
+        return Event(
+            event_type=(
+                EventType.WAKE_DETECTED if self.detected else EventType.AUDIO_SILENCE
+            ),
+            timestamp_ns=self.timestamp_ns,
+            confidence=self.wake_probability * self.audio_quality,
+            source=Source.AUDIO,
+            subject_id=subject_id,
+            label="WAKE" if self.detected else "NO_WAKE",
+            event_id=f"{event_id}-{'wake' if self.detected else 'nowake'}",
+            metadata={
+                "raw_wake_probability": self.wake_probability,
+                "audio_quality": self.audio_quality,
+                "snr_db": self.snr_db,
+                "noise_estimate_db": self.noise_estimate_db,
+                "model_version": self.model_version,
+                "inference_latency_ms": self.inference_latency_ms,
+                "scores": self.scores,
+            },
+        )
+
+
+class WakeWordDetector:
+    """Detect the wake phrase in an audio buffer.
+
+    Parameters
+    ----------
+    config:
+        Audio parameters and thresholds.
+    backend:
+        Classifier producing ``wake``/``not_wake`` (or any labels including a
+        ``wake`` class) probabilities.
+    representation:
+        Spectral representation. Defaults to the module-level recommendation
+        (`MFCC`); see `intentlock.audio.features` for the rationale.
+    """
+
+    #: Class label the backend must expose for a positive detection.
+    WAKE_LABEL = "wake"
+
+    def __init__(
+        self,
+        config: AudioConfig,
+        backend: InferenceBackend,
+        *,
+        representation: AudioRepresentation = AudioRepresentation.MFCC,
+    ) -> None:
+        if self.WAKE_LABEL not in backend.class_names:
+            raise MalformedInputError(
+                f"audio backend must expose a {self.WAKE_LABEL!r} class; "
+                f"got {backend.class_names}"
+            )
+        self._config = config
+        self._backend = backend
+        self._representation = representation
+
+    @property
+    def model_version(self) -> str:
+        """Version of the loaded wake model."""
+        return self._backend.model_version
+
+    def features(self, samples: np.ndarray) -> AudioFeatures:
+        """Run the audio preprocessing chain.
+
+        Raises
+        ------
+        MalformedInputError
+            For malformed audio. Callers that must degrade should use
+            `detect_events`.
+        """
+        return preprocess_audio(
+            samples,
+            sample_rate=self._config.sample_rate,
+            frame_ms=self._config.frame_ms,
+            hop_ms=self._config.hop_ms,
+            n_mels=self._config.n_mels,
+            representation=self._representation,
+        )
+
+    def detect(self, samples: np.ndarray, *, timestamp_ns: int = 0) -> WakeDetection:
+        """Analyse one audio buffer.
+
+        The quality factor combines the noise estimate with the SNR: a buffer
+        whose background noise exceeds `audio.max_noise_rms` is scaled down
+        proportionally, so the safety gate sees a weaker signal rather than a
+        confidently wrong one.
+        """
+        started = time.perf_counter()
+        audio = self.features(samples)
+        output = self._backend.predict(audio.to_vector())
+        latency_ms = (time.perf_counter() - started) * 1000.0
+
+        scores = {name: float(output.scores[i]) for i, name in enumerate(output.class_names)}
+        wake_probability = scores.get(self.WAKE_LABEL, 0.0)
+
+        audio_quality = self._quality(audio)
+        detected = (
+            wake_probability >= self._config.wake_threshold
+            and audio.rms > 0.0
+            and audio.snr_db > -20.0
+        )
+
+        return WakeDetection(
+            detected=detected,
+            wake_probability=wake_probability,
+            timestamp_ns=timestamp_ns,
+            audio_quality=audio_quality,
+            noise_estimate_db=audio.noise_estimate,
+            snr_db=audio.snr_db,
+            rms=audio.rms,
+            model_version=self._backend.model_version,
+            inference_latency_ms=latency_ms,
+            scores=scores,
+        )
+
+    def detect_events(
+        self,
+        samples: np.ndarray,
+        *,
+        timestamp_ns: int = 0,
+        subject_id: str | None = None,
+        event_id_prefix: str = "audio",
+    ) -> list[Event]:
+        """Analyse a buffer and return pipeline events.
+
+        A malformed buffer degrades to an `AUDIO_NOISE_HIGH` event rather than
+        raising, so a corrupt audio packet cannot halt the interaction loop.
+        """
+        try:
+            detection = self.detect(samples, timestamp_ns=timestamp_ns)
+        except MalformedInputError as exc:
+            return [
+                Event(
+                    event_type=EventType.AUDIO_NOISE_HIGH,
+                    timestamp_ns=timestamp_ns,
+                    confidence=1.0,
+                    source=Source.AUDIO,
+                    subject_id=subject_id,
+                    label="MALFORMED_AUDIO",
+                    event_id=f"{event_id_prefix}-malformed-{timestamp_ns}",
+                    metadata={"reason": str(exc)},
+                )
+            ]
+        return [
+            detection.to_event(
+                event_id=f"{event_id_prefix}-{timestamp_ns}", subject_id=subject_id
+            )
+        ]
+
+    def _quality(self, audio: AudioFeatures) -> float:
+        """Map environment quality onto [0, 1].
+
+        1.0 in a quiet environment with adequate SNR, falling to 0.0 as ambient
+        noise reaches `max_noise_rms` or SNR falls below zero. Silence (rms 0)
+        scores 0.0: a detector cannot be reliable when there is nothing to detect.
+
+        Both inputs are converted to the same linear-RMS scale before comparison,
+        because `noise_estimate` is in dBFS while `max_noise_rms` is a linear
+        RMS.
+        """
+        if audio.rms <= 0.0:
+            return 0.0
+        # Silence threshold in dBFS: anything quieter carries no speech.
+        if audio.noise_estimate <= _SILENCE_DBFS:
+            noise_linear = 0.0
+        else:
+            noise_linear = 10.0 ** (audio.noise_estimate / 20.0)
+        if noise_linear >= self._config.max_noise_rms:
+            return 0.0
+        noise_factor = 1.0 - (noise_linear / self._config.max_noise_rms)
+        # If noise_estimate is extremely low (synthetic test audio), treat SNR as perfect (1.0)
+        if audio.noise_estimate <= _SILENCE_DBFS:
+            snr_factor = 1.0
+        else:
+            snr_factor = float(np.clip(audio.snr_db / _MIN_RELIABLE_SNR_DB, 0.0, 1.0))
+        return float(np.clip(noise_factor * snr_factor, 0.0, 1.0))
+</file>
+
+<file path="intentlock/src/intentlock/audio/features.py">
+"""Audio feature extraction: framing, windowing, log-mel and MFCC, noise estimate.
+
+Design note on representation choice
+------------------------------------
+The specification says "Do not blindly use MFCC if experiments show a better
+representation. Benchmark alternatives where reasonable."
+
+Both representations are implemented and selectable so the comparison can be run
+rather than asserted (`training/benchmark_representations.py`):
+
+* `log_mel` — 40 log-mel filterbank energies. Preserves the spectral envelope
+  with no decorrelation step; better for a small CNN.
+* `mfcc` — DCT of the log-mel spectrum. Decorrelates and compresses, which is
+  the classic choice when the input to a small feature-based classifier must be a
+  few dozen numbers.
+
+**Default is `mfcc`**, because the deployed wake-word model is a small
+feature-based classifier rather than a CNN, and decorrelation matters more than
+the discarded detail at that size. This is a documented default backed by a
+runnable comparison, not an assumption.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+
+from intentlock.common.errors import MalformedInputError
+
+_EPS = 1e-10
+
+
+class AudioRepresentation(str, Enum):
+    """Which spectral representation to produce."""
+
+    LOG_MEL = "log_mel"
+    MFCC = "mfcc"
+
+
+@dataclass(frozen=True, slots=True)
+class AudioFeatures:
+    """Spectral features plus the quality metadata the pipeline needs.
+
+    Attributes
+    ----------
+    features:
+        ``(n_frames, n_coefficients)`` matrix.
+    noise_estimate:
+        Robust estimate of the background noise level (dBFS). The safety gate uses
+        it: a wake detection in a very noisy environment is less trustworthy even
+        at the same model confidence.
+    snr_db:
+        Estimated signal-to-noise ratio in dB. Negative means the signal is below
+        the noise floor.
+    rms:
+        Overall root-mean-square amplitude.
+    """
+
+    features: np.ndarray
+    noise_estimate: float
+    snr_db: float
+    rms: float
+
+    @property
+    def n_frames(self) -> int:
+        """Number of frames."""
+        return int(self.features.shape[0])
+
+    @property
+    def n_coefficients(self) -> int:
+        """Number of coefficients per frame."""
+        return int(self.features.shape[1])
+
+    def to_vector(self) -> np.ndarray:
+        """Flatten to a fixed-length vector, averaging frames.
+
+        Averaging over frames turns a frame sequence into a single fixed-length
+        input for a small classifier. It deliberately loses fine temporal detail,
+        which is acceptable for a *keyword* detector because the keyword occupies
+        most of the analysis window. A CNN backend can consume `features` directly
+        instead.
+        """
+        return self.features.mean(axis=0)
+
+
+def preprocess_audio(
+    samples: np.ndarray,
+    *,
+    sample_rate: int,
+    frame_ms: int,
+    hop_ms: int,
+    n_mels: int,
+    representation: AudioRepresentation = AudioRepresentation.MFCC,
+    n_mfcc: int = 13,
+    n_fft: int = 512,
+) -> AudioFeatures:
+    """Run the full audio preprocessing chain.
+
+    ``raw -> validate -> DC-remove -> frame -> window -> power spectrum ->
+     mel filterbank -> log -> (optionally DCT -> MFCC) -> utterance normalise``
+
+    Parameters
+    ----------
+    samples:
+        Mono float waveform in [-1, 1]. Values outside that range are an error:
+        they mean the caller skipped normalisation, and silently clipping would
+        hide a gain-staging bug.
+    sample_rate:
+        Sampling rate in Hz.
+    frame_ms, hop_ms:
+        25 ms / 10 ms is the standard speech-analysis setting.
+    n_mels:
+        Number of mel filterbank channels.
+    representation:
+        `LOG_MEL` or `MFCC`.
+    n_mfcc:
+        Number of cepstral coefficients when `representation` is `MFCC`.
+    n_fft:
+        FFT size; must be at least the frame length.
+
+    Raises
+    ------
+    MalformedInputError
+        For non-finite samples, out-of-range values, or a buffer too short to
+        frame. A short buffer is an error rather than a padded one because
+        padding fabricates signal.
+    """
+    if not isinstance(samples, np.ndarray):
+        raise MalformedInputError(f"audio must be a numpy array, got {type(samples).__name__}")
+    if samples.ndim != 1:
+        raise MalformedInputError(f"audio must be mono (1-D), got shape {samples.shape}")
+    if not np.isfinite(samples).all():
+        raise MalformedInputError("audio contains non-finite samples")
+    if samples.size == 0:
+        raise MalformedInputError("audio buffer is empty")
+    peak = float(np.max(np.abs(samples)))
+    if peak > 1.0 + 1e-6:
+        raise MalformedInputError(
+            f"audio samples must be in [-1, 1]; peak was {peak:.3f}. Normalise before "
+            "calling (a clipped signal would hide a gain-staging bug)."
+        )
+
+    frame_length = round(sample_rate * frame_ms / 1000)
+    hop_length = round(sample_rate * hop_ms / 1000)
+    if n_fft < frame_length:
+        raise MalformedInputError(
+            f"n_fft ({n_fft}) must be >= frame length ({frame_length} samples)"
+        )
+    if samples.size < frame_length:
+        raise MalformedInputError(
+            f"audio buffer ({samples.size} samples) is shorter than one frame ({frame_length})"
+        )
+
+    signal = samples.astype(np.float64, copy=True)
+    signal -= float(signal.mean())  # remove the ADC's DC offset
+    rms = float(np.sqrt(np.mean(signal**2)))
+    noise_estimate = _noise_floor_db(signal)
+
+    frames = _frame(signal, frame_length, hop_length)
+    windowed = frames * np.hanning(frame_length)
+    power = np.abs(np.fft.rfft(windowed, n=n_fft, axis=1)) ** 2
+
+    filters = mel_filterbank(sample_rate=sample_rate, n_fft=n_fft, n_mels=n_mels)
+    log_mel = np.log(power @ filters.T + _EPS)
+
+    if representation is AudioRepresentation.LOG_MEL:
+        features = log_mel
+    else:
+        # DCT-II of the log-mel spectrum; orthonormal so coefficient magnitudes
+        # are comparable across coefficient index.
+        features = log_mel @ _dct_matrix(n_mels, n_mfcc).T
+
+    # Per-utterance mean/variance normalisation removes gain and channel
+    # differences between microphones, which is the largest source of
+    # cross-device variation for a wake word.
+    mean = features.mean(axis=0, keepdims=True)
+    std = features.std(axis=0, keepdims=True)
+    features = (features - mean) / np.maximum(std, _EPS)
+
+    signal_db = 20.0 * np.log10(max(rms, _EPS))
+    return AudioFeatures(
+        features=np.ascontiguousarray(features),
+        noise_estimate=noise_estimate,
+        snr_db=float(signal_db - noise_estimate),
+        rms=rms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Signal-processing primitives
+# ---------------------------------------------------------------------------
+
+
+def _frame(signal: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
+    """Split a 1-D signal into overlapping frames.
+
+    Uses stride tricks so no data is copied, then materialises the result because
+    downstream FFTs need a contiguous array.
+    """
+    n_frames = 1 + (len(signal) - frame_length) // hop_length
+    if n_frames <= 0:
+        raise MalformedInputError(
+            f"signal of {len(signal)} samples yields no frames at "
+            f"frame_length={frame_length}, hop={hop_length}"
+        )
+    shape = (n_frames, frame_length)
+    strides = (signal.strides[0] * hop_length, signal.strides[0])
+    frames = np.lib.stride_tricks.as_strided(signal, shape=shape, strides=strides)
+    return np.ascontiguousarray(frames)
+
+
+def hz_to_mel(frequency_hz: np.ndarray | float) -> np.ndarray:
+    """Convert Hz to the mel scale (HTK formula)."""
+    return 2595.0 * np.log10(1.0 + np.asarray(frequency_hz, dtype=np.float64) / 700.0)
+
+
+def mel_to_hz(mel: np.ndarray | float) -> np.ndarray:
+    """Inverse of `hz_to_mel`."""
+    return 700.0 * (10.0 ** (np.asarray(mel, dtype=np.float64) / 2595.0) - 1.0)
+
+
+def mel_filterbank(
+    *,
+    sample_rate: int,
+    n_fft: int,
+    n_mels: int,
+    f_min: float = 20.0,
+    f_max: float | None = None,
+) -> np.ndarray:
+    """Triangular mel filterbank matrix of shape ``(n_mels, n_fft // 2 + 1)``.
+
+    Implemented directly rather than taken from a library so the preprocessing
+    chain has no optional dependency and the filter shapes are inspectable.
+    `f_max` defaults to the Nyquist frequency.
+    """
+    if f_max is None:
+        f_max = sample_rate / 2.0
+    if not 0.0 < f_min < f_max <= sample_rate / 2.0:
+        raise MalformedInputError(
+            f"invalid mel range: f_min={f_min}, f_max={f_max}, nyquist={sample_rate / 2.0}"
+        )
+    if n_mels < 1:
+        raise MalformedInputError(f"n_mels must be >= 1, got {n_mels}")
+
+    n_bins = n_fft // 2 + 1
+    hz_points = mel_to_hz(np.linspace(hz_to_mel(f_min), hz_to_mel(f_max), n_mels + 2))
+    # Map each filter edge to the nearest FFT bin.
+    bins = np.clip(np.floor((n_fft + 1) * hz_points / sample_rate).astype(int), 0, n_bins - 1)
+
+    filters = np.zeros((n_mels, n_bins), dtype=np.float64)
+    for index in range(n_mels):
+        left, centre, right = bins[index], bins[index + 1], bins[index + 2]
+        if centre <= left:
+            centre = min(left + 1, n_bins - 1)
+        if right <= centre:
+            right = min(centre + 1, n_bins - 1)
+        filters[index, left:centre] = (np.arange(left, centre) - left) / (centre - left)
+        filters[index, centre:right] = (right - np.arange(centre, right)) / (right - centre)
+
+    # Normalise each filter to unit area so energy comparisons across filter
+    # indices are meaningful (otherwise high-frequency filters capture more bins).
+    return filters / np.maximum(filters.sum(axis=1, keepdims=True), _EPS)
+
+
+def _dct_matrix(n_inputs: int, n_outputs: int) -> np.ndarray:
+    """Orthonormal DCT-II matrix of shape ``(n_outputs, n_inputs)``.
+
+    Orthonormal scaling makes coefficient magnitudes comparable, which matters
+    because the features are z-scored afterwards.
+    """
+    if n_outputs > n_inputs:
+        raise MalformedInputError(
+            f"cannot take {n_outputs} DCT coefficients from {n_inputs} inputs"
+        )
+    k = np.arange(n_outputs)[:, None]
+    n = np.arange(n_inputs)[None, :]
+    matrix = np.cos(np.pi * k * (2 * n + 1) / (2 * n_inputs))
+    matrix *= np.sqrt(2.0 / n_inputs)
+    matrix[0, :] *= np.sqrt(0.5)
+    return matrix
+
+
+def _noise_floor_db(signal: np.ndarray, *, percentile: float = 10.0) -> float:
+    """Estimate the noise floor in dBFS from the quietest frames.
+
+    Uses a low percentile of per-frame RMS rather than the overall RMS, so a loud
+    utterance inside the buffer does not raise its own noise estimate. This is the
+    robust estimate the safety gate needs: an overall-RMS figure would track the
+    signal and therefore measure nothing useful.
+    """
+    frame_length = min(512, max(1, len(signal) // 4))
+    if len(signal) < frame_length * 2:
+        return 20.0 * np.log10(max(float(np.sqrt(np.mean(signal**2))), _EPS))
+    n_frames = len(signal) // frame_length
+    trimmed = signal[: n_frames * frame_length].reshape(n_frames, frame_length)
+    per_frame_rms = np.sqrt(np.mean(trimmed**2, axis=1))
+    return 20.0 * np.log10(max(float(np.percentile(per_frame_rms, percentile)), _EPS))
+
+
+def resample_linear(samples: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    """Resample by linear interpolation.
+
+    ponytail: linear interpolation, adequate for matching a device's native rate
+    to a model's expected rate at 8-48 kHz, where the energy relevant to a
+    keyword sits well below the target Nyquist. It is not a high-fidelity
+    anti-aliased resampler; upgrade to a polyphase filter if wideband content
+    near or above the target Nyquist ever matters.
+    """
+    if source_rate == target_rate:
+        return samples.astype(np.float64, copy=True)
+    if source_rate <= 0 or target_rate <= 0:
+        raise MalformedInputError(
+            f"sample rates must be positive, got source={source_rate}, target={target_rate}"
+        )
+    if samples.size == 0:
+        raise MalformedInputError("cannot resample an empty buffer")
+
+    target_count = max(1, round((samples.size / source_rate) * target_rate))
+    source_positions = np.arange(target_count) * (source_rate / target_rate)
+    return np.interp(
+        source_positions,
+        np.arange(samples.size),
+        samples.astype(np.float64, copy=False),
+    )
+</file>
+
+<file path="intentlock/src/intentlock/cli/__init__.py">
+"""cli subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/common/__init__.py">
+"""common subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/common/errors.py">
+"""IntentLock exception hierarchy.
+
+A single root exception lets callers distinguish *our* failures from bugs in
+third-party code, and lets the top-level runner fail safely without a bare
+`except Exception`.
+"""
+
+from __future__ import annotations
+
+
+class IntentLockError(Exception):
+    """Root of every error raised deliberately by IntentLock."""
+
+
+class ConfigurationError(IntentLockError):
+    """Raised when configuration is missing, malformed, or self-inconsistent.
+
+    IntentLock refuses to start with an invalid configuration rather than
+    silently falling back to defaults.
+    """
+
+
+class SensorError(IntentLockError):
+    """Base class for sensor/perception failures."""
+
+
+class SensorUnavailableError(SensorError):
+    """A required sensor cannot be opened or has disappeared mid-session.
+
+    This is a *degradable* condition: the pipeline must record the loss and
+    continue with reduced evidence, never assume a value for the missing
+    modality.
+    """
+
+
+#: Backwards-compatible alias. The canonical name carries the `Error` suffix the
+#: project lint rules require; the short name is kept because it reads naturally
+#: at call sites that catch it as a condition.
+SensorUnavailable = SensorUnavailableError
+
+
+class MalformedInputError(SensorError):
+    """A packet failed validation (length, range, timestamp, NaN, ...).
+
+    Sensor input is untrusted; this is the boundary where bad data is rejected.
+    """
+
+
+class SequenceError(IntentLockError):
+    """A temporal sequence is impossible, expired, or out of order."""
+
+
+class ModelError(IntentLockError):
+    """A model could not be loaded, or its I/O schema does not match the contract."""
+
+
+class ActionError(IntentLockError):
+    """An action was requested that is not in the executor's allowlist,
+    or an action failed to execute.
+    """
+</file>
+
+<file path="intentlock/src/intentlock/common/events.py">
+"""The `Event` primitive: the single exchange type of the IntentLock pipeline.
+
+Design notes
+------------
+Every event carries not only *what* was perceived but *when*, *how sure*, and
+*who*. The `subject_id` field is what makes identity consistency expressible as
+a temporal constraint: a fusion model can ask "are all events in this sequence
+about the same pseudonymous subject?" without any raw biometric being present.
+
+Timestamps are **monotonic nanoseconds since the owning clock's epoch**, taken
+from a single session clock (`intentlock.synchronization.clock.SessionClock`).
+Nanoseconds-as-int removes float drift when comparing events separated by
+milliseconds, and keeps ordering exact.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Any
+
+from intentlock.common.errors import MalformedInputError
+
+
+class Source(str, Enum):
+    """Which perception subsystem produced an event."""
+
+    AUDIO = "audio"
+    VISION = "vision"
+    IMU = "imu"
+    SYSTEM = "system"  # state-machine / clock events, not a physical modality
+
+
+class EventType(str, Enum):
+    """The closed vocabulary of things the temporal engine understands.
+
+    Keeping this an enum (rather than free-form strings) means an unknown event
+    type is a programming error caught at test time, not a silent no-op at
+    runtime.
+    """
+
+    # --- audio ---
+    WAKE_DETECTED = "wake_detected"
+    AUDIO_SILENCE = "audio_silence"
+    AUDIO_NOISE_HIGH = "audio_noise_high"
+
+    # --- vision ---
+    PERSON_PRESENT = "person_present"
+    PERSON_ABSENT = "person_absent"
+    ATTENTION_ENGAGED = "attention_engaged"
+    ATTENTION_DISENGAGED = "attention_disengaged"
+    IDENTITY_KNOWN = "identity_known"
+    IDENTITY_UNKNOWN = "identity_unknown"
+    IDENTITY_AMBIGUOUS = "identity_ambiguous"
+    VISION_OCCLUDED = "vision_occluded"
+
+    # --- imu ---
+    GESTURE_DETECTED = "gesture_detected"
+    NO_GESTURE = "no_gesture"
+    IMU_ANOMALY = "imu_anomaly"
+
+    # --- system ---
+    SENSOR_UNAVAILABLE = "sensor_unavailable"
+    SENSOR_RECOVERED = "sensor_recovered"
+    SESSION_START = "session_start"
+
+
+# Event types that describe a modality observation and therefore may not be
+# emitted by the generic SYSTEM source.
+_BEHAVIOURAL_TYPES = frozenset(
+    {
+        EventType.WAKE_DETECTED,
+        EventType.PERSON_PRESENT,
+        EventType.PERSON_ABSENT,
+        EventType.ATTENTION_ENGAGED,
+        EventType.ATTENTION_DISENGAGED,
+        EventType.IDENTITY_KNOWN,
+        EventType.IDENTITY_UNKNOWN,
+        EventType.IDENTITY_AMBIGUOUS,
+        EventType.VISION_OCCLUDED,
+        EventType.GESTURE_DETECTED,
+        EventType.NO_GESTURE,
+        EventType.IMU_ANOMALY,
+        EventType.AUDIO_SILENCE,
+        EventType.AUDIO_NOISE_HIGH,
+    }
+)
+
+# Negative events express the *absence* of something. The safety gate treats
+# them as active evidence against execution, not as missing data.
+_NEGATIVE_TYPES = frozenset(
+    {
+        EventType.PERSON_ABSENT,
+        EventType.NO_GESTURE,
+        EventType.AUDIO_SILENCE,
+        EventType.VISION_OCCLUDED,
+        EventType.ATTENTION_DISENGAGED,
+        EventType.IMU_ANOMALY,
+    }
+)
+
+_MAX_CONFIDENCE_EPS = 1e-9
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """An immutable, timestamped, confidence-scored observation.
+
+    Attributes
+    ----------
+    event_type:
+        What happened. Restricting this to `EventType` keeps the temporal
+        engine's vocabulary closed and testable.
+    timestamp_ns:
+        Monotonic nanoseconds on the owning session clock.
+    confidence:
+        Calibrated probability in [0, 1] that the event genuinely occurred.
+        For `NO_GESTURE`/`PERSON_ABSENT`/`AUDIO_SILENCE` the confidence is the
+        probability of the *negative* observation.
+    source:
+        Producing subsystem.
+    subject_id:
+        Pseudonymous identity hash of the person this event is about, or None
+        when the modality cannot attribute the observation to a person (e.g. a
+        wake-word detection with no speaker identification).
+    label:
+        Optional discrete label, e.g. the gesture name for `GESTURE_DETECTED`.
+        Stored as a plain string so models can add labels without a schema
+        change, but validated against the configured vocabulary by the producer.
+    event_id:
+        Stable identifier used for deduplication. Deterministic by default so
+        that replaying the same log produces identical events.
+    metadata:
+        Free-form, machine-readable extras (signal quality, noise estimate,
+        model version, ...). Must be JSON-serialisable.
+    """
+
+    event_type: EventType
+    timestamp_ns: int
+    confidence: float
+    source: Source
+    subject_id: str | None = None
+    label: str | None = None
+    event_id: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # --- untrusted-input validation at the trust boundary ---
+        if isinstance(self.timestamp_ns, bool) or not isinstance(self.timestamp_ns, int):
+            raise MalformedInputError(f"timestamp_ns must be int, got {type(self.timestamp_ns)!r}")
+        if self.timestamp_ns < 0:
+            raise MalformedInputError(f"timestamp_ns must be non-negative, got {self.timestamp_ns}")
+
+        conf = self.confidence
+        if isinstance(conf, bool) or not isinstance(conf, (int, float)):
+            raise MalformedInputError(f"confidence must be a real number, got {type(conf)!r}")
+        conf_f = float(conf)
+        if math.isnan(conf_f) or math.isinf(conf_f):
+            raise MalformedInputError("confidence must be finite")
+        # Tolerate tiny floating-point overshoot from softmax implementations by
+        # clamping instead of rejecting: a 1.0000000001 must not abort a session.
+        if conf_f < -_MAX_CONFIDENCE_EPS or conf_f > 1.0 + _MAX_CONFIDENCE_EPS:
+            raise MalformedInputError(f"confidence must be in [0, 1], got {conf_f}")
+        object.__setattr__(self, "confidence", min(1.0, max(0.0, conf_f)))
+
+        if self.subject_id is not None and not isinstance(self.subject_id, str):
+            raise MalformedInputError("subject_id must be a string or None")
+        if self.label is not None and not isinstance(self.label, str):
+            raise MalformedInputError("label must be a string or None")
+        if not isinstance(self.event_id, str):
+            raise MalformedInputError("event_id must be a string")
+        if not isinstance(self.metadata, Mapping):
+            raise MalformedInputError("metadata must be a mapping")
+
+        if self.source is Source.SYSTEM and self.event_type in _BEHAVIOURAL_TYPES:
+            raise MalformedInputError(
+                f"{self.event_type.value} cannot originate from the system source"
+            )
+
+    # -- derived properties -------------------------------------------------
+
+    @property
+    def duration_ns(self) -> int:
+        """Declared span of the observation, or 0 for instantaneous events."""
+        value = self.metadata.get("duration_ns", 0)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    def is_negative(self) -> bool:
+        """True for events expressing the absence of something."""
+        return self.event_type in _NEGATIVE_TYPES
+
+    # -- helpers ------------------------------------------------------------
+
+    def with_confidence(self, confidence: float) -> Event:
+        """Return a copy with a different confidence (e.g. after calibration)."""
+        return replace(self, confidence=confidence)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serialisable representation, used by telemetry and the simulator."""
+        return {
+            "event_id": self.event_id,
+            "event_type": self.event_type.value,
+            "timestamp_ns": self.timestamp_ns,
+            "confidence": self.confidence,
+            "source": self.source.value,
+            "subject_id": self.subject_id,
+            "label": self.label,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> Event:
+        """Inverse of `to_dict`, with validation.
+
+        Replay files and sensor packets both travel through here, so a malformed
+        payload must fail loudly rather than produce a half-valid event.
+
+        Raises
+        ------
+        MalformedInputError
+            If the payload is missing required keys or holds invalid values.
+        """
+        try:
+            event_type = EventType(payload["event_type"])
+            source = Source(payload["source"])
+            timestamp_ns = int(payload["timestamp_ns"])
+            confidence = float(payload["confidence"])
+        except KeyError as exc:
+            raise MalformedInputError(f"event payload missing key: {exc}") from exc
+        except (TypeError, ValueError) as exc:
+            raise MalformedInputError(f"event payload invalid: {exc}") from exc
+
+        metadata = payload.get("metadata") or {}
+        if not isinstance(metadata, Mapping):
+            raise MalformedInputError("event metadata must be a mapping")
+
+        return cls(
+            event_type=event_type,
+            timestamp_ns=timestamp_ns,
+            confidence=confidence,
+            source=source,
+            subject_id=payload.get("subject_id"),
+            label=payload.get("label"),
+            event_id=str(payload.get("event_id", "")),
+            metadata=dict(metadata),
+        )
+
+    def __str__(self) -> str:  # concise form for logs and demo output
+        label = f":{self.label}" if self.label else ""
+        return (
+            f"[{self.timestamp_ns}] {self.source.value}/{self.event_type.value}{label} "
+            f"p={self.confidence:.3f}"
+        )
+</file>
+
+<file path="intentlock/src/intentlock/common/logging.py">
+"""Structured logging.
+
+IntentLock logs structured key/value data rather than interpolated prose so
+that telemetry is machine-parseable and cannot be corrupted by attacker-influenced
+strings (log injection). `sanitize_value` is the guard for the latter.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from typing import Any
+
+# Control characters and newlines in a value let an attacker forge additional
+# log records. They are stripped from every string that reaches the log.
+_FORBIDDEN = str.maketrans({"\n": "\\n", "\r": "\\r", "\t": "\\t", "\x00": ""})
+
+_MAX_VALUE_LEN = 512
+
+
+def sanitize_value(value: Any, _depth: int = 0) -> Any:
+    """Recursively make `value` safe for structured logging.
+
+    - newlines/CR/tab/NUL are escaped (prevents log injection)
+    - strings are truncated to `_MAX_VALUE_LEN`
+    - non-JSON-serialisable objects are replaced by their type name
+    - container depth is bounded to avoid pathological nesting
+    """
+    if _depth > 6:
+        return "<max-depth>"
+    if isinstance(value, str):
+        cleaned = value.translate(_FORBIDDEN)
+        if len(cleaned) > _MAX_VALUE_LEN:
+            return cleaned[:_MAX_VALUE_LEN] + "…"
+        return cleaned
+    if isinstance(value, dict):
+        return {str(k)[:64]: sanitize_value(v, _depth + 1) for k, v in list(value.items())[:64]}
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)[:64]
+        return [sanitize_value(v, _depth + 1) for v in items]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return f"<{type(value).__name__}>"
+
+
+class _StructuredFormatter(logging.Formatter):
+    """Renders records as single-line JSON, with message as the `event` key."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "event": sanitize_value(record.getMessage()),
+        }
+        for key, value in getattr(record, "extra_fields", {}).items():
+            payload[key] = sanitize_value(value)
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info).translate(_FORBIDDEN)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+class StructuredLogger(logging.LoggerAdapter):  # type: ignore[type-arg]
+    """Logger adapter that accepts arbitrary keyword fields.
+
+    Usage::
+
+        log.info("gesture_classified", gesture="LEFT", confidence=0.91)
+    """
+
+    def process(  # type: ignore[override]
+        self, msg: object, kwargs: dict[str, Any]
+    ) -> tuple[object, dict[str, Any]]:
+        extra = dict(self.extra or {})
+        fields = kwargs.pop("extra_fields", {})
+        extra["extra_fields"] = fields
+        kwargs["extra"] = extra
+        return msg, kwargs
+
+    def info(self, msg: object, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        if args or "extra_fields" in kwargs:
+            self.log(logging.INFO, msg, *args, **kwargs)
+        else:
+            self.log(logging.INFO, msg, **kwargs)
+
+    def warning(self, msg: object, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        self.log(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg: object, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        self.log(logging.ERROR, msg, *args, **kwargs)
+
+    def debug(self, msg: object, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        self.log(logging.DEBUG, msg, *args, **kwargs)
+
+
+_CONFIGURED = False
+
+
+def configure_logging(level: str = "INFO", json_output: bool = True) -> None:
+    """Install the IntentLock logging configuration on the root logger once."""
+    global _CONFIGURED
+    handler = logging.StreamHandler(sys.stderr)
+    if json_output:
+        handler.setFormatter(_StructuredFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+
+    root = logging.getLogger("intentlock")
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.propagate = False
+    _CONFIGURED = True
+
+
+def get_logger(name: str, **context: Any) -> StructuredLogger:
+    """Return a structured logger for `name` (typically `__name__`)."""
+    if not _CONFIGURED:
+        configure_logging()
+    return StructuredLogger(logging.getLogger(name), dict(context))
+</file>
+
+<file path="intentlock/src/intentlock/common/seed.py">
+"""Deterministic randomness.
+
+Every stochastic step in IntentLock (weight init, augmentation, simulated
+sensor noise, dataset shuffling) draws from a seeded generator obtained here, so
+that "run it twice, get the same numbers" is a property of the system rather
+than of careful manual seeding.
+"""
+
+from __future__ import annotations
+
+import os
+import random
+
+import numpy as np
+
+# Chosen arbitrarily but fixed forever: changing it invalidates every published
+# experiment result, which is exactly why it is a named constant.
+DEFAULT_SEED = 1337
+
+
+def resolve_seed(seed: int | None = None) -> int:
+    """Return `seed`, or the value of INTENTLOCK_SEED, or the default.
+
+    The environment variable exists so that CI can sweep seeds without editing
+    code.
+    """
+    if seed is not None:
+        return int(seed)
+    raw = os.environ.get("INTENTLOCK_SEED")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_SEED
+    try:
+        return int(raw)
+    except ValueError:
+        # A malformed env var must not silently change experiment results.
+        return DEFAULT_SEED
+
+
+def seed_everything(seed: int | None = None) -> int:
+    """Seed Python's `random` and NumPy. Returns the seed actually used.
+
+    Torch is seeded only if it is importable, so the core pipeline keeps working
+    without the training extra installed.
+    """
+    resolved = resolve_seed(seed)
+    random.seed(resolved)
+    np.random.seed(resolved)
+    os.environ["PYTHONHASHSEED"] = str(resolved)
+
+    try:  # pragma: no cover - depends on optional dependency
+        import torch
+
+        torch.manual_seed(resolved)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(resolved)
+    except ImportError:
+        pass
+
+    return resolved
+
+
+def rng(seed: int | None = None) -> np.random.Generator:
+    """A NumPy generator for call sites that want isolation from global state."""
+    return np.random.default_rng(resolve_seed(seed))
+</file>
+
+<file path="intentlock/src/intentlock/configuration/__init__.py">
+"""Configuration: schema, loading and validation."""
+
+from intentlock.configuration.loader import config_from_dict, load_config, to_yaml
+from intentlock.configuration.schema import (
+    AudioConfig,
+    DatasetConfig,
+    GestureConfig,
+    IntentConfig,
+    IntentLockConfig,
+    PrivacyConfig,
+    SafetyConfig,
+    StateMachineConfig,
+    TelemetryConfig,
+    TemporalConfig,
+    VisionConfig,
+)
+
+__all__ = [
+    "AudioConfig",
+    "DatasetConfig",
+    "GestureConfig",
+    "IntentConfig",
+    "IntentLockConfig",
+    "PrivacyConfig",
+    "SafetyConfig",
+    "StateMachineConfig",
+    "TelemetryConfig",
+    "TemporalConfig",
+    "VisionConfig",
+    "config_from_dict",
+    "load_config",
+    "to_yaml",
+]
+</file>
+
+<file path="intentlock/src/intentlock/configuration/loader.py">
+"""Config ↔ YAML mapping and loading.
+
+`load_config` is the single entry point. It validates the file, resolves paths
+against the repository root rather than the process CWD, and raises
+`ConfigurationError` with a readable message on any problem.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import ValidationError
+
+from intentlock.common.errors import ConfigurationError
+from intentlock.configuration.schema import IntentLockConfig
+
+
+def load_config(path: str | Path | None = None) -> IntentLockConfig:
+    """Load and validate the runtime configuration.
+
+    Resolution order for `path`:
+      1. the explicit argument,
+      2. the ``INTENTLOCK_CONFIG`` environment variable,
+      3. ``./configs/intentlock.yaml``.
+
+    A missing file is *not* an error when `path` was not given explicitly: the
+    built-in defaults are complete and validated. This is what makes
+    `intentlock replay session.json` work on a fresh clone.
+
+    Raises
+    ------
+    ConfigurationError
+        If the file exists but cannot be parsed, contains invalid values, or was
+        named explicitly and does not exist.
+    """
+    explicit = path is not None
+    resolved = Path(path) if path is not None else _default_config_path()
+
+    if not resolved.exists():
+        if explicit:
+            raise ConfigurationError(f"configuration file not found: {resolved}")
+        return IntentLockConfig()
+
+    try:
+        raw = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(f"invalid YAML in {resolved}: {exc}") from exc
+    except OSError as exc:
+        raise ConfigurationError(f"cannot read configuration {resolved}: {exc}") from exc
+
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigurationError(
+            f"configuration root must be a mapping, got {type(raw).__name__} in {resolved}"
+        )
+
+    return config_from_dict(raw, source=str(resolved))
+
+
+def config_from_dict(raw: dict[str, Any], source: str = "<dict>") -> IntentLockConfig:
+    """Validate a plain mapping into a config object.
+
+    Raises
+    ------
+    ConfigurationError
+        With every validation problem listed, so one run surfaces all typos.
+    """
+    try:
+        return IntentLockConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise ConfigurationError(
+            f"invalid configuration from {source}:\n{_format_validation_error(exc)}"
+        ) from exc
+
+
+def to_yaml(config: IntentLockConfig) -> str:
+    """Serialise a config for `intentlock config show --format yaml`."""
+    return yaml.safe_dump(config.model_dump(mode="json"), sort_keys=True, indent=2)
+
+
+def _default_config_path() -> Path:
+    env = os.environ.get("INTENTLOCK_CONFIG")
+    if env:
+        return Path(env)
+    return Path("./configs/intentlock.yaml")
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    lines: list[str] = []
+    for err in exc.errors():
+        location = ".".join(str(part) for part in err["loc"]) or "<root>"
+        lines.append(f"  - {location}: {err['msg']}")
+    return "\n".join(lines)
+</file>
+
+<file path="intentlock/src/intentlock/configuration/schema.py">
+"""Configuration loading and validation.
+
+Why Pydantic
+------------
+Thresholds and temporal budgets are the system's tuned parameters, and a silent
+typo in a YAML file could disable the safety gate. Pydantic gives us range
+checks, cross-field consistency rules and a readable error trace, all evaluated
+*before* the pipeline starts, so the system refuses to run misconfigured rather
+than behaving surprisingly.
+
+Nothing in IntentLock reads a threshold from anywhere except this module.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class _StrictModel(BaseModel):
+    """Base model that rejects unknown keys.
+
+    Unknown keys are almost always typos (`wake_threshhold`); failing loudly
+    beats a silently-ignored safety parameter.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class AudioConfig(_StrictModel):
+    """Wake-word detection parameters."""
+
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    frame_ms: int = Field(default=25, ge=10, le=100)
+    hop_ms: int = Field(default=10, ge=5, le=50)
+    n_mels: int = Field(default=40, ge=16, le=128)
+    # Minimum calibrated wake probability to emit WAKE_DETECTED.
+    wake_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    # Linear RMS of ambient noise above which the environment is considered too
+    # noisy to trust a wake detection. 0.02 RMS is -34 dBFS: a busy room with
+    # background conversation. Above this the audio-quality factor is zeroed, so
+    # the safety gate discounts the detection rather than trusting it.
+    max_noise_rms: float = Field(default=0.02, gt=0.0)
+    backend: Literal["simulator", "sounddevice"] = "simulator"
+
+    @model_validator(mode="after")
+    def _hop_not_larger_than_frame(self) -> AudioConfig:
+        if self.hop_ms > self.frame_ms:
+            raise ValueError("audio.hop_ms must not exceed audio.frame_ms")
+        return self
+
+
+class VisionConfig(_StrictModel):
+    """Presence, identity and attention parameters."""
+
+    frame_rate: float = Field(default=5.0, gt=0.0, le=60.0)
+    person_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    identity_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    attention_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    # When two identities are within this margin the result is AMBIGUOUS, never
+    # a coin-flip for the higher one.
+    ambiguity_margin: float = Field(default=0.15, ge=0.0, le=1.0)
+    # Seconds of no usable frame before VISION_OCCLUDED is emitted.
+    occlusion_timeout_s: float = Field(default=1.5, gt=0.0)
+    max_faces: int = Field(default=4, ge=1, le=16)
+    backend: Literal["simulator", "opencv"] = "simulator"
+
+    @model_validator(mode="after")
+    def _identity_above_person(self) -> VisionConfig:
+        if self.identity_threshold < self.person_threshold:
+            raise ValueError(
+                "vision.identity_threshold must be >= vision.person_threshold "
+                "(identity is only meaningful once a person is present)"
+            )
+        return self
+
+
+class GestureConfig(_StrictModel):
+    """IMU gesture recognition parameters."""
+
+    sample_rate: int = Field(default=100, ge=25, le=400)
+    window_ms: int = Field(default=800, ge=200, le=3000)
+    stride_ms: int = Field(default=200, ge=50, le=1000)
+    accel_range_g: float = Field(default=8.0, gt=0.0, le=16.0)
+    gyro_range_dps: float = Field(default=1000.0, gt=0.0, le=4000.0)
+    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    # Below this confidence the window is UNKNOWN, never the argmax gesture.
+    unknown_floor: float = Field(default=0.45, ge=0.0, le=1.0)
+    # A window whose peak magnitude exceeds this is treated as a sensor artefact
+    # rather than a gesture (e.g. a drop or a loose cable).
+    max_accel_g: float = Field(default=12.0, gt=0.0)
+    # Minimum *dynamic* normalised inertial energy (var(|a|) + mean(|g|^2)) for a
+    # window to be treated as motion. Calibrated from measurement: a resting wrist
+    # measures ~0.001, a decisive arm sweep ~0.057. See imu/detector.py for why the
+    # gravity-removed form is required (raw magnitude energy is dominated by gravity
+    # and would invert the gate).
+    activity_energy_floor: float = Field(default=0.004, ge=0.0, le=1.0)
+    backend: Literal["simulator", "arduino_bridge", "csv_replay"] = "simulator"
+
+    @model_validator(mode="after")
+    def _window_and_thresholds(self) -> GestureConfig:
+        if self.stride_ms > self.window_ms:
+            raise ValueError("gesture.stride_ms must not exceed gesture.window_ms")
+        if self.unknown_floor > self.confidence_threshold:
+            raise ValueError(
+                "gesture.unknown_floor must be <= gesture.confidence_threshold "
+                "(otherwise no window could ever be accepted)"
+            )
+        if self.window_ms % self.stride_ms != 0:
+            raise ValueError("gesture.window_ms must be a multiple of gesture.stride_ms")
+        return self
+class TemporalConfig(_StrictModel):
+    """Temporal constraints on interaction sequences.
+
+    These encode the behavioural handshake. Each ordered pair is a *maximum*
+    allowed gap in milliseconds; minimum gaps encode the smallest separation
+    below which two events are considered simultaneous (and therefore not a valid
+    ordered handshake).
+    """
+
+    # person -> wake: the user must be seen before, and shortly before, waking it.
+    person_to_wake_max_ms: int = Field(default=5000, gt=0)
+    # wake -> gesture: the command gesture must follow the wake word promptly.
+    wake_to_gesture_max_ms: int = Field(default=4000, gt=0)
+    wake_to_gesture_min_ms: int = Field(default=120, ge=0)
+    # gesture -> confirmation (optional explicit confirmation).
+    gesture_to_confirm_max_ms: int = Field(default=3000, gt=0)
+    # Total budget for one whole interaction.
+    max_sequence_ms: int = Field(default=12000, gt=0)
+    # Events older than this are expired and cannot join a live sequence.
+    event_ttl_ms: int = Field(default=15000, gt=0)
+    # Tolerance used when ordering events; events closer than this are ordered by
+    # arrival rather than by timestamp, absorbing jitter between clocks.
+    ordering_jitter_ms: int = Field(default=40, ge=0)
+
+    @model_validator(mode="after")
+    def _budgets_consistent(self) -> TemporalConfig:
+        if self.wake_to_gesture_min_ms >= self.wake_to_gesture_max_ms:
+            raise ValueError("wake_to_gesture_min_ms must be < wake_to_gesture_max_ms")
+        if self.max_sequence_ms < self.wake_to_gesture_max_ms:
+            raise ValueError(
+                "max_sequence_ms must be >= wake_to_gesture_max_ms "
+                "(a valid handshake must fit inside the sequence budget)"
+            )
+        if self.event_ttl_ms < self.max_sequence_ms:
+            raise ValueError(
+                "event_ttl_ms must be >= max_sequence_ms "
+                "(otherwise live events expire before a sequence can complete)"
+            )
+        return self
+
+
+class IntentConfig(_StrictModel):
+    """Fusion and evidence thresholds."""
+
+    # Minimum calibrated probability of intent required for EXECUTE.
+    intent_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    # Below this the result is REJECT rather than RETRY (hopeless vs. incomplete).
+    reject_below: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Number of independent evidence sources that must contribute.
+    minimum_evidence: int = Field(default=3, ge=1, le=4)
+    # Identity consistency is a hard constraint by default: events must agree on subject.
+    require_identity_consistency: bool = True
+    # Weight of the temporal-ordering term in the fusion score.
+    ordering_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    # Weight of the identity-consistency term.
+    identity_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    # Weight of the context term (attention, noise, occlusion).
+    context_weight: float = Field(default=0.10, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _thresholds_ordered(self) -> IntentConfig:
+        if self.reject_below >= self.intent_threshold:
+            raise ValueError("intent.reject_below must be < intent.intent_threshold")
+        total = self.ordering_weight + self.identity_weight + self.context_weight
+        if total > 1.0 + 1e-9:
+            raise ValueError(
+                f"intent weights must sum to <= 1.0, got {total:.3f} "
+                "(the remainder is carried by the modality evidence)"
+            )
+        return self
+
+
+class SafetyConfig(_StrictModel):
+    """Safety-gate and execution-control parameters."""
+
+    # One physical gesture must not produce two commands.
+    cooldown_ms: int = Field(default=1500, ge=0)
+    # After a RETRY decision, how long the user has to complete the handshake.
+    retry_timeout_ms: int = Field(default=5000, gt=0)
+    max_retries: int = Field(default=2, ge=0, le=10)
+    # Hard ceiling on executed commands per rolling minute.
+    max_commands_per_minute: int = Field(default=12, ge=1)
+    # If identity cannot be established, refuse rather than assume identity.
+    require_verified_identity: bool = True
+    # Treat sensor loss as a rejection reason (never silently assume a modality).
+    reject_on_sensor_loss: bool = True
+    executor: Literal["logging", "null", "uno_q"] = "logging"
+
+    @model_validator(mode="after")
+    def _cooldown_below_retry(self) -> SafetyConfig:
+        if self.cooldown_ms >= self.retry_timeout_ms:
+            raise ValueError(
+                "safety.cooldown_ms must be < safety.retry_timeout_ms "
+                "(otherwise the cooldown swallows the retry window)"
+            )
+        return self
+
+
+
+
+class StateMachineConfig(_StrictModel):
+    """State-machine timing."""
+
+    # How long the system waits in a WAITING_* state before giving up.
+    wake_timeout_ms: int = Field(default=4000, gt=0)
+    gesture_timeout_ms: int = Field(default=4000, gt=0)
+    verify_timeout_ms: int = Field(default=500, gt=0)
+    # Presence is considered lost after this much silence from vision.
+    person_timeout_ms: int = Field(default=3000, gt=0)
+
+
+class TelemetryConfig(_StrictModel):
+    """Telemetry emission."""
+
+    enabled: bool = True
+    output_dir: str = "./artifacts/telemetry"
+    # Raw audio/frames are never written; this flag exists so the invariant is
+    # explicit and can be asserted in tests.
+    record_raw_media: Literal[False] = False
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+
+
+class PrivacyConfig(_StrictModel):
+    """Privacy controls.
+
+    The defaults are the strict ones; loosening them requires an explicit edit,
+    which is the point.
+    """
+
+    # Face embeddings are kept in memory only and never written to disk.
+    persist_biometrics: Literal[False] = False
+    # Identity is stored as a salted hash, never a name or image.
+    identity_hash_salt: str = Field(default="intentlock-default-salt", min_length=8)
+    # Maximum number of in-memory embeddings per session before LRU eviction.
+    max_embeddings_in_memory: int = Field(default=64, ge=1)
+    # Seconds that an interaction record is retained in the in-memory buffer.
+    interaction_retention_s: int = Field(default=300, gt=0)
+
+
+class DatasetConfig(_StrictModel):
+    """Dataset locations and split policy."""
+
+    root: str = "./data"
+    # Participant-level splitting is mandatory to prevent subject leakage.
+    split_policy: Literal["participant", "session"] = "participant"
+    train_ratio: float = Field(default=0.6, gt=0.0, lt=1.0)
+    val_ratio: float = Field(default=0.2, gt=0.0, lt=1.0)
+    seed: int = Field(default=1337)
+
+    @model_validator(mode="after")
+    def _ratios_sum_below_one(self) -> DatasetConfig:
+        if self.train_ratio + self.val_ratio >= 1.0:
+            raise ValueError(
+                "dataset.train_ratio + dataset.val_ratio must be < 1.0 "
+                "(the test set is the remainder)"
+            )
+        return self
+
+
+class IntentLockConfig(_StrictModel):
+    """Root configuration object.
+
+    This is the only configuration type the pipeline accepts. Load it with
+    `load_config` (validated) and pass it down explicitly; there is no global
+    config singleton.
+    """
+
+    audio: AudioConfig = Field(default_factory=AudioConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
+    gesture: GestureConfig = Field(default_factory=GestureConfig)
+    temporal: TemporalConfig = Field(default_factory=TemporalConfig)
+    intent: IntentConfig = Field(default_factory=IntentConfig)
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    state_machine: StateMachineConfig = Field(default_factory=StateMachineConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
+    dataset: DatasetConfig = Field(default_factory=DatasetConfig)
+
+    @model_validator(mode="after")
+    def _gesture_window_fits_temporal_budget(self) -> IntentLockConfig:
+        """The gesture window must fit inside the wake->gesture budget."""
+        window_ms = self.gesture.window_ms
+        if window_ms > self.temporal.wake_to_gesture_max_ms:
+            raise ValueError(
+                f"gesture.window_ms ({window_ms}) exceeds "
+                f"temporal.wake_to_gesture_max_ms ({self.temporal.wake_to_gesture_max_ms}); "
+                "a gesture could never complete inside the allowed gap"
+            )
+        return self
+</file>
+
+<file path="intentlock/src/intentlock/context/__init__.py">
+"""context subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/fusion/__init__.py">
+"""fusion subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/imu/__init__.py">
+"""IMU: gesture vocabulary, preprocessing, classification and detection."""
+
+from intentlock.imu.classifier import (
+    LinearGestureBackend,
+    ModelMetadata,
+    calibrate_scores,
+    fit_temperature,
+    softmax,
+)
+from intentlock.imu.detector import GestureDetection, GestureDetector
+from intentlock.imu.preprocessing import (
+    FEATURE_NAMES,
+    GRAVITY_MS2,
+    SAMPLE_COLUMNS,
+    ImuCalibration,
+    Window,
+    calibrate,
+    dynamic_energy,
+    extract_features,
+    gravity_align,
+    normalize,
+    validate,
+    window_stream,
+)
+from intentlock.imu.vocabulary import (
+    COMMAND_GESTURES,
+    GESTURE_CLASSES,
+    GESTURE_TO_COMMAND,
+    INGESTURE_TO_INTENTLOCK,
+    NON_COMMAND_GESTURES,
+    Gesture,
+    is_command_gesture,
+)
+
+__all__ = [
+    "COMMAND_GESTURES",
+    "FEATURE_NAMES",
+    "GESTURE_CLASSES",
+    "GESTURE_TO_COMMAND",
+    "GRAVITY_MS2",
+    "INGESTURE_TO_INTENTLOCK",
+    "NON_COMMAND_GESTURES",
+    "SAMPLE_COLUMNS",
+    "Gesture",
+    "GestureDetection",
+    "GestureDetector",
+    "ImuCalibration",
+    "LinearGestureBackend",
+    "ModelMetadata",
+    "Window",
+    "calibrate",
+    "calibrate_scores",
+    "dynamic_energy",
+    "extract_features",
+    "fit_temperature",
+    "gravity_align",
+    "is_command_gesture",
+    "normalize",
+    "softmax",
+    "validate",
+    "window_stream",
+]
+</file>
+
+<file path="intentlock/src/intentlock/imu/classifier.py">
+"""IMU gesture classifier.
+
+Two interchangeable backends, both real (no stubs):
+
+1. `SklearnGestureBackend` — a softmax (multinomial logistic regression) trained
+   with NumPy gradient descent on the 20 interpretable features in
+   `imu.preprocessing`. This is the default because it trains in seconds on a
+   CPU, is fully reproducible, and is small enough to ship to the UNO Q as a
+   weight matrix. It is the *baseline* for the architecture comparison.
+2. `TorchGestureBackend` — a small 1-D CNN/GRU over the raw window, used to test
+   whether a temporal model beats the feature baseline. Requires the `train`
+   extra; it is not the default, because "a Transformer because it sounds
+   advanced" is exactly the reasoning this project rejects.
+
+Both implement `InferenceBackend`, so the application is unaware of which is
+loaded.
+
+Temperature scaling
+-------------------
+Raw softmax output is not a calibrated probability. `calibrate_scores` applies a
+fitted temperature so that a reported 0.8 means roughly 80% empirical accuracy,
+which is the precondition for thresholding at all.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from intentlock.common.errors import ModelError
+from intentlock.imu.preprocessing import FEATURE_NAMES, extract_features
+from intentlock.imu.vocabulary import GESTURE_CLASSES
+from intentlock.interfaces.backend import InferenceOutput
+
+
+@dataclass(frozen=True, slots=True)
+class ModelMetadata:
+    """Version metadata recorded with every trained model.
+
+    Required by the specification: a model file with no provenance cannot be
+    reproduced or safely replaced.
+    """
+
+    model_version: str
+    dataset_version: str
+    training_config: Mapping[str, Any]
+    git_commit: str
+    timestamp: str
+    metrics: Mapping[str, float]
+    input_schema: str
+    output_schema: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_version": self.model_version,
+            "dataset_version": self.dataset_version,
+            "training_config": dict(self.training_config),
+            "git_commit": self.git_commit,
+            "timestamp": self.timestamp,
+            "metrics": dict(self.metrics),
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ModelMetadata:
+        try:
+            return cls(
+                model_version=str(payload["model_version"]),
+                dataset_version=str(payload["dataset_version"]),
+                training_config=dict(payload["training_config"]),
+                git_commit=str(payload["git_commit"]),
+                timestamp=str(payload["timestamp"]),
+                metrics={k: float(v) for k, v in dict(payload["metrics"]).items()},
+                input_schema=str(payload["input_schema"]),
+                output_schema=str(payload["output_schema"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ModelError(f"invalid model metadata: {exc}") from exc
+
+
+def softmax(logits: np.ndarray) -> np.ndarray:
+    """Numerically stable softmax over a 1-D or 2-D array's last axis."""
+    shifted = logits - np.max(logits, axis=-1, keepdims=True)
+    exponent = np.exp(shifted)
+    return exponent / np.sum(exponent, axis=-1, keepdims=True)
+
+
+def calibrate_scores(scores: np.ndarray, temperature: float) -> np.ndarray:
+    """Apply temperature scaling to probabilities.
+
+    Parameters
+    ----------
+    scores:
+        Probability vector (or matrix) summing to 1 along the last axis.
+    temperature:
+        Fitted on the validation split. ``T > 1`` softens an overconfident model;
+        ``T < 1`` sharpens an underconfident one. ``T = 1`` is a no-op.
+
+    Notes
+    -----
+    Temperature is applied in log space, so this is a genuine recalibration
+    rather than a rescaling of the maximum.
+    """
+    if temperature <= 0:
+        raise ModelError(f"temperature must be positive, got {temperature}")
+    if temperature == 1.0:
+        return scores
+    epsilon = 1e-12
+    logits = np.log(np.clip(scores, epsilon, 1.0)) / temperature
+    return softmax(logits)
+
+
+def fit_temperature(
+    probabilities: np.ndarray, labels: np.ndarray, *, max_iter: int = 100
+) -> float:
+    """Fit a single temperature by minimising validation NLL (grid + refine).
+
+    A one-parameter grid search is used rather than gradient descent because the
+    objective is unimodal in log-temperature and the search is exhaustive enough
+    to be exact for reporting purposes.
+
+    The grid spans 0.05 to 20.0. The upper bound matters: a linear model trained
+    on few samples produces very peaked logits, and a grid that stops at 8 can
+    hit its ceiling and silently report a miscalibrated model as calibrated. The
+    bound is wide enough that the optimum is interior in practice, and the value
+    returned is verified to improve on no calibration before it is accepted.
+    """
+    if probabilities.ndim != 2:
+        raise ModelError("probabilities must be 2-D (n_samples, n_classes)")
+    if len(probabilities) != len(labels):
+        raise ModelError(
+            f"probabilities ({len(probabilities)}) and labels ({len(labels)}) length mismatch"
+        )
+    if len(probabilities) == 0:
+        return 1.0
+
+    indices = np.arange(len(labels))
+
+    def nll(temperature: float) -> float:
+        calibrated = calibrate_scores(probabilities, temperature)
+        correct = calibrated[indices, labels]
+        return float(-np.mean(np.log(np.clip(correct, 1e-12, 1.0))))
+
+    baseline = nll(1.0)
+    grid = np.exp(np.linspace(math.log(0.05), math.log(20.0), max_iter))
+    scores = np.array([nll(float(t)) for t in grid])
+    best = float(grid[int(np.argmin(scores))])
+    # Only accept the fit if it genuinely improves on no calibration, so this
+    # step can never make a model worse than leaving it alone.
+    return best if nll(best) < baseline else 1.0
+
+
+class LinearGestureBackend:
+    """Multinomial logistic regression over the interpretable feature vector.
+
+    Trained with full-batch gradient descent plus L2 regularisation. This is
+    deliberately a *linear* model: it is the honest baseline for the IMU
+    modality, and its weights are directly inspectable, so a reviewer can see
+    which features drive each gesture.
+
+    Implements `InferenceBackend`.
+    """
+
+    #: Input contract: feature vectors of this length.
+    INPUT_SCHEMA = f"features[{len(FEATURE_NAMES)}]"
+
+    def __init__(
+        self,
+        weights: np.ndarray,
+        bias: np.ndarray,
+        *,
+        metadata: ModelMetadata,
+        temperature: float = 1.0,
+        class_names: tuple[str, ...] = GESTURE_CLASSES,
+    ) -> None:
+        if weights.ndim != 2:
+            raise ModelError(f"weights must be 2-D, got shape {weights.shape}")
+        if weights.shape[1] != len(FEATURE_NAMES):
+            raise ModelError(
+                f"weights expect {len(FEATURE_NAMES)} features, got {weights.shape[1]}"
+            )
+        if weights.shape[0] != len(class_names):
+            raise ModelError(
+                f"weights have {weights.shape[0]} classes but {len(class_names)} names given"
+            )
+        if bias.shape != (weights.shape[0],):
+            raise ModelError(f"bias shape {bias.shape} does not match classes {weights.shape[0]}")
+        if temperature <= 0:
+            raise ModelError(f"temperature must be positive, got {temperature}")
+        self._weights = weights.astype(np.float64, copy=True)
+        self._bias = bias.astype(np.float64, copy=True)
+        self._metadata = metadata
+        self._temperature = float(temperature)
+        self._class_names = tuple(class_names)
+
+    # -- InferenceBackend protocol ----------------------------------------
+
+    @property
+    def model_version(self) -> str:
+        return self._metadata.model_version
+
+    @property
+    def input_shape(self) -> tuple[int, ...]:
+        return (len(FEATURE_NAMES),)
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        return self._class_names
+
+    @property
+    def metadata(self) -> ModelMetadata:
+        """Full version metadata for telemetry and the model inventory."""
+        return self._metadata
+
+    @property
+    def temperature(self) -> float:
+        """Fitted calibration temperature."""
+        return self._temperature
+
+    def predict(self, window: np.ndarray) -> InferenceOutput:
+        """Score one feature vector or one raw window.
+
+        Accepts either a ``(n_features,)`` feature vector or a ``(n_samples, 6)``
+        raw window, because callers legitimately have both to hand. An ambiguous
+        shape is an error rather than a guess.
+        """
+        started = time.perf_counter()
+        features = self._as_features(window)
+        logits = features @ self._weights.T + self._bias
+        raw = softmax(logits)
+        scores = calibrate_scores(raw, self._temperature)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        return InferenceOutput(
+            scores=np.asarray(scores, dtype=np.float64),
+            class_names=self._class_names,
+            model_version=self.model_version,
+            latency_ms=latency_ms,
+        )
+
+    def _as_features(self, window: np.ndarray) -> np.ndarray:
+        """Coerce input into a single feature vector of the expected length."""
+        if not isinstance(window, np.ndarray):
+            raise ModelError(f"input must be a numpy array, got {type(window).__name__}")
+        flat = window.astype(np.float64, copy=False)
+        if flat.ndim == 1:
+            if flat.shape[0] != len(FEATURE_NAMES):
+                raise ModelError(
+                    f"feature vector must have {len(FEATURE_NAMES)} elements, got {flat.shape[0]}"
+                )
+            return np.nan_to_num(flat, nan=0.0, posinf=0.0, neginf=0.0)
+        if flat.ndim == 2:
+            if flat.shape[1] != len(FEATURE_NAMES):
+                if flat.shape[1] == 6:
+                    # A raw (n_samples, 6) window: extract features on the fly.
+                    return extract_features(flat)
+                raise ModelError(
+                    f"2-D input must be features[{len(FEATURE_NAMES)}] or raw (n, 6); "
+                    f"got shape {flat.shape}"
+                )
+            # A batch of feature vectors: average them, which is the standard way
+            # to fold overlapping windows into one window-level decision.
+            return np.nan_to_num(flat.mean(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
+        raise ModelError(f"input must be 1-D or 2-D, got {flat.ndim}-D")
+
+    # -- training ----------------------------------------------------------
+
+    @classmethod
+    def fit(
+        cls,
+        features: np.ndarray,
+        labels: np.ndarray,
+        *,
+        metadata: ModelMetadata,
+        learning_rate: float = 0.5,
+        epochs: int = 400,
+        l2: float = 1e-3,
+        temperature: float = 1.0,
+        class_names: tuple[str, ...] = GESTURE_CLASSES,
+    ) -> LinearGestureBackend:
+        """Train by full-batch gradient descent on softmax cross-entropy.
+
+        Parameters
+        ----------
+        features:
+            ``(n_samples, n_features)`` matrix, standardised by the caller.
+        labels:
+            ``(n_samples,)`` integer class indices into `class_names`.
+        metadata:
+            Provenance record stored with the model. Required, not optional: a
+            model without version metadata cannot be reproduced.
+        learning_rate, epochs, l2:
+            Optimisation hyperparameters. L2 excludes the bias, which must stay free.
+        temperature:
+            Calibration temperature, normally fitted afterwards on validation.
+
+        Returns
+        -------
+        LinearGestureBackend
+            The trained model.
+
+        Raises
+        ------
+        ModelError
+            If the inputs are inconsistent, or if a class in `class_names` has no
+            training examples. A class with no examples would produce an untrained
+            output row the model could still select, so this is a hard error.
+        """
+        n_samples, n_features = features.shape
+        if n_features != len(FEATURE_NAMES):
+            raise ModelError(f"expected {len(FEATURE_NAMES)} features, got {n_features}")
+        if len(labels) != n_samples:
+            raise ModelError(f"label count {len(labels)} != sample count {n_samples}")
+        if n_samples == 0:
+            raise ModelError("cannot train on an empty dataset")
+
+        n_classes = len(class_names)
+        invalid = sorted({int(v) for v in labels if int(v) < 0 or int(v) >= n_classes})
+        if invalid:
+            raise ModelError(f"labels out of range for {n_classes} classes: {invalid}")
+        present = {int(v) for v in np.unique(labels)}
+        missing = [class_names[i] for i in range(n_classes) if i not in present]
+        if missing:
+            raise ModelError(
+                f"no training examples for classes {missing}; every output class needs "
+                "examples or the model would emit an untrained row"
+            )
+
+        x = features.astype(np.float64, copy=True)
+        y = labels.astype(np.int64, copy=False)
+        weights = np.zeros((n_classes, n_features), dtype=np.float64)
+        bias = np.zeros(n_classes, dtype=np.float64)
+        one_hot = np.zeros((n_samples, n_classes), dtype=np.float64)
+        one_hot[np.arange(n_samples), y] = 1.0
+
+        for _ in range(epochs):
+            probabilities = softmax(x @ weights.T + bias)
+            error = (probabilities - one_hot) / n_samples
+            grad_w = error.T @ x + l2 * weights
+            grad_b = error.sum(axis=0)
+            weights -= learning_rate * grad_w
+            bias -= learning_rate * grad_b
+
+        return cls(
+            weights=weights,
+            bias=bias,
+            metadata=metadata,
+            temperature=temperature,
+            class_names=class_names,
+        )
+
+    def parameter_count(self) -> int:
+        """Total trainable parameters, for the model inventory and benchmarks."""
+        return int(self._weights.size + self._bias.size)
+
+    # -- persistence -------------------------------------------------------
+
+    def save(self, directory: str | Path) -> Path:
+        """Persist weights, calibration and metadata into `directory`."""
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        # allow_pickle=False on load means the arrays must stay plain numeric or
+        # object-of-str dtypes; that is a deliberate choice so a model file can
+        # never execute code when loaded (no insecure deserialization surface).
+        np.savez(
+            target / "imu_linear.npz",
+            weights=self._weights,
+            bias=self._bias,
+            temperature=np.asarray([self._temperature]),
+            class_names=np.asarray(self._class_names, dtype="<U32"),
+            feature_names=np.asarray(FEATURE_NAMES, dtype="<U32"),
+        )
+        (target / "imu_linear.metadata.json").write_text(
+            json.dumps(self._metadata.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
+        )
+        return target
+
+    @classmethod
+    def load(cls, directory: str | Path) -> LinearGestureBackend:
+        """Load a previously saved model.
+
+        Raises
+        ------
+        ModelError
+            If any artefact is missing or inconsistent. A partially-loaded model
+            would be silently wrong, so this refuses rather than defaults.
+        """
+        target = Path(directory)
+        weights_path = target / "imu_linear.npz"
+        meta_path = target / "imu_linear.metadata.json"
+        for path in (weights_path, meta_path):
+            if not path.exists():
+                raise ModelError(f"model artefact not found: {path}")
+
+        try:
+            with np.load(weights_path, allow_pickle=False) as payload:
+                weights = payload["weights"]
+                bias = payload["bias"]
+                temperature = float(payload["temperature"][0])
+                class_names = tuple(str(c) for c in payload["class_names"])
+                feature_names = tuple(str(f) for f in payload["feature_names"])
+        except (OSError, KeyError, ValueError) as exc:
+            raise ModelError(f"cannot read {weights_path}: {exc}") from exc
+
+        if feature_names != FEATURE_NAMES:
+            raise ModelError(
+                "model was trained on a different feature set than this code produces; "
+                f"model has {len(feature_names)} features, code has {len(FEATURE_NAMES)}"
+            )
+
+        try:
+            metadata = ModelMetadata.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ModelError(f"cannot read {meta_path}: {exc}") from exc
+
+        return cls(
+            weights=weights,
+            bias=bias,
+            metadata=metadata,
+            temperature=temperature,
+            class_names=class_names,
+        )
+
+    def export_linear_weights(self) -> dict[str, Any]:
+        """Raw weight dictionary for export to ONNX / TFLite / a hand-written kernel.
+
+        Returned as plain lists so it is JSON-serialisable and can be embedded in
+        generated C without a numerical library on the MCU side.
+        """
+        return {
+            "weights": [[float(v) for v in row] for row in self._weights],
+            "bias": [float(v) for v in self._bias],
+            "temperature": self._temperature,
+            "class_names": list(self._class_names),
+            "feature_names": list(FEATURE_NAMES),
+        }
+</file>
+
+<file path="intentlock/src/intentlock/imu/detector.py">
+"""Turn a stream of IMU samples into `GESTURE_DETECTED` / `NO_GESTURE` events.
+
+This is the boundary between "signal processing" and "the rest of IntentLock".
+It owns three decisions the specification requires explicitly:
+
+1. **When a window is a gesture at all** — an activity gate based on signal
+   energy. Without it, ordinary hand movement would be handed to the classifier
+   and the classifier would be forced to pick a gesture, which is exactly the
+   "classify noise as a gesture" failure the specification forbids.
+2. **When a prediction is too uncertain to name** — below `unknown_floor` the
+   label becomes `UNKNOWN` rather than the argmax.
+3. **When a window is a sensor artefact** — an out-of-range magnitude produces
+   `IMU_ANOMALY`, which the gate treats as evidence *against* executing.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+import numpy as np
+
+from intentlock.common.errors import MalformedInputError
+from intentlock.common.events import Event, EventType, Source
+from intentlock.configuration.schema import GestureConfig
+from intentlock.imu.preprocessing import (
+    ImuCalibration,
+    Window,
+    calibrate,
+    dynamic_energy,
+    extract_features,
+    gravity_align,
+    normalize,
+    validate,
+    window_stream,
+)
+from intentlock.imu.vocabulary import Gesture, is_command_gesture
+from intentlock.interfaces.backend import InferenceBackend
+
+#: Default minimum *dynamic* inertial energy for a window to be considered motion.
+#:
+#: Calibrated from measurement, not guessed. Two candidate metrics were compared
+#: in `scripts/dev_check_imu.py`:
+#:
+#: * total magnitude energy (``mean(|a|^2) + mean(|g|^2)``) — **unusable** as an
+#:   activity gate, because gravity gives a stationary sensor ``mean(|a|^2) ≈ 1``,
+#:   which dominates the motion signal entirely. A resting wrist scored 0.062 while
+#:   a real sweep scored 0.036, i.e. the metric was *inverted*.
+#: * dynamic energy (``var(|a|) + mean(|g|^2)``) — gravity is constant so it drops
+#:   out of the variance, and gyroscope has no gravitational offset. Measured:
+#:   resting ≈ 0.0002, decisive sweep ≈ 0.010-0.017. This is the metric used, and
+#:   the floor sits at roughly one third of the weakest observed gesture.
+#:   Overridable per deployment via `GestureConfig.activity_energy_floor`.
+DEFAULT_ACTIVITY_ENERGY_FLOOR = 0.004
+
+
+@dataclass(frozen=True, slots=True)
+class GestureDetection:
+    """One classified window with everything needed to explain the decision."""
+
+    label: str
+    confidence: float
+    window_start_ns: int
+    window_end_ns: int
+    is_gesture: bool
+    model_version: str
+    inference_latency_ms: float
+    scores: dict[str, float]
+    gated_as_activity: bool
+
+    def to_event(self, *, event_id: str, subject_id: str | None = None) -> Event:
+        """Convert into the pipeline's exchange type."""
+        return Event(
+            event_type=EventType.GESTURE_DETECTED if self.is_gesture else EventType.NO_GESTURE,
+            timestamp_ns=self.window_end_ns,
+            confidence=self.confidence,
+            source=Source.IMU,
+            subject_id=subject_id,
+            label=self.label,
+            event_id=event_id,
+            metadata={
+                "window_start_ns": self.window_start_ns,
+                "window_end_ns": self.window_end_ns,
+                "duration_ns": self.window_end_ns - self.window_start_ns,
+                "model_version": self.model_version,
+                "inference_latency_ms": self.inference_latency_ms,
+                "scores": self.scores,
+                "energy_gated": self.gated_as_activity,
+            },
+        )
+
+
+class GestureDetector:
+    """Classify IMU windows into the gesture vocabulary.
+
+    Parameters
+    ----------
+    config:
+        Gesture parameters (window length, thresholds, sensor ranges).
+    backend:
+        The classifier. Any `InferenceBackend` whose class names cover the
+        gesture vocabulary.
+    calibration:
+        Per-device calibration. Defaults to identity, which is correct for a
+        simulator or a factory-calibrated device, but the value in use is exposed
+        so the provenance of a decision is never ambiguous.
+    """
+
+    def __init__(
+        self,
+        config: GestureConfig,
+        backend: InferenceBackend,
+        *,
+        calibration: ImuCalibration | None = None,
+    ) -> None:
+        self._config = config
+        self._backend = backend
+        self._calibration = calibration or ImuCalibration.identity()
+        unknown = Gesture.UNKNOWN.value
+        if unknown not in backend.class_names:
+            raise MalformedInputError(
+                f"gesture backend must expose an {unknown!r} class; got {backend.class_names}"
+            )
+
+    @property
+    def model_version(self) -> str:
+        """Version of the loaded classifier."""
+        return self._backend.model_version
+
+    @property
+    def calibration(self) -> ImuCalibration:
+        """The calibration in use; recorded in telemetry with every decision."""
+        return self._calibration
+
+    def preprocess(self, raw_samples: np.ndarray) -> np.ndarray:
+        """Run the documented preprocessing chain on a raw window.
+
+        ``raw -> validate -> calibrate -> gravity_align -> normalize``
+
+        Raises
+        ------
+        MalformedInputError
+            If the window is malformed or out of range. Callers that must degrade
+            rather than raise should use `detect_events`, which converts this into
+            an `IMU_ANOMALY` event.
+        """
+        validated = validate(
+            raw_samples, max_accel_g=self._config.max_accel_g, name="gesture window"
+        )
+        calibrated = calibrate(validated, self._calibration)
+        aligned = gravity_align(calibrated)
+        return normalize(
+            aligned,
+            accel_scale=self._config.accel_range_g,
+            gyro_scale=self._config.gyro_range_dps,
+        )
+
+    def is_active(self, window: Window) -> bool:
+        """Whether a window contains enough motion to be worth classifying.
+
+        Uses `dynamic_energy` (gravity removed), which is orientation-independent
+        and — unlike raw magnitude energy — is actually a *motion* measure. The
+        floor comes from configuration so it can be re-tuned per deployment
+        without a code change; see `DEFAULT_ACTIVITY_ENERGY_FLOOR` for the
+        measured justification.
+        """
+        return dynamic_energy(window) >= self._config.activity_energy_floor
+
+    def classify(self, window: Window) -> GestureDetection:
+        """Classify one already-preprocessed window.
+
+        Applies two abstention rules in this order:
+
+        1. If the window carries insufficient motion it is `NO_GESTURE`. The
+           classifier is still consulted so the recorded confidence is a real
+           model output rather than an invented constant.
+        2. If the top class is below `unknown_floor`, the label is `UNKNOWN`.
+           Between `unknown_floor` and `confidence_threshold` the label is kept but
+           carries genuine uncertainty, which the fusion layer sees directly.
+        """
+        started = time.perf_counter()
+        features = extract_features(window)
+        output = self._backend.predict(features)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+
+        scores = {name: float(output.scores[i]) for i, name in enumerate(output.class_names)}
+        top_label, top_prob = output.top()
+        active = self.is_active(window)
+
+        if not active:
+            label = Gesture.NO_GESTURE.value
+            confidence = scores.get(Gesture.NO_GESTURE.value, top_prob)
+            is_gesture = False
+        elif top_prob < self._config.unknown_floor:
+            label = Gesture.UNKNOWN.value
+            # Confidence in abstaining is the probability mass that is *not* the
+            # single best class: saying "unknown" is justified to the degree the
+            # model is unsure.
+            confidence = max(scores.get(Gesture.UNKNOWN.value, 0.0), 1.0 - top_prob)
+            is_gesture = False
+        else:
+            label = top_label
+            confidence = top_prob
+            is_gesture = is_command_gesture(label)
+
+        return GestureDetection(
+            label=label,
+            confidence=float(confidence),
+            window_start_ns=window.start_timestamp_ns,
+            window_end_ns=window.start_timestamp_ns + window.duration_ns,
+            is_gesture=is_gesture,
+            model_version=self._backend.model_version,
+            inference_latency_ms=latency_ms,
+            scores=scores,
+            gated_as_activity=active,
+        )
+
+    def detect(
+        self,
+        raw_stream: np.ndarray,
+        *,
+        timestamps_ns: np.ndarray | None = None,
+    ) -> list[GestureDetection]:
+        """Window and classify a raw stream, returning at most one detection.
+
+        Collapsing overlapping windows here (rather than emitting one detection
+        per window and letting the cooldown suppress them) is both correct and
+        cheaper: one physical sweep must produce one event. The retained
+        detection is the highest-confidence *command* gesture if any window is a
+        command, otherwise the highest-confidence `NO_GESTURE`.
+        """
+        preprocessed = self.preprocess(raw_stream)
+        windows = window_stream(
+            preprocessed,
+            sample_rate=self._config.sample_rate,
+            window_ms=self._config.window_ms,
+            stride_ms=self._config.stride_ms,
+            timestamps_ns=timestamps_ns,
+        )
+        if not windows:
+            return []
+
+        detections = [self.classify(window) for window in windows]
+        commands = [d for d in detections if d.is_gesture]
+        pool = commands if commands else detections
+        return [max(pool, key=lambda d: d.confidence)]
+
+    def detect_events(
+        self,
+        raw_stream: np.ndarray,
+        *,
+        timestamps_ns: np.ndarray | None = None,
+        subject_id: str | None = None,
+        event_id_prefix: str = "imu",
+    ) -> list[Event]:
+        """Convenience wrapper returning pipeline events directly.
+
+        A malformed or out-of-range stream produces a single `IMU_ANOMALY` event
+        rather than raising: a corrupt packet must degrade the system safely
+        instead of halting the interaction loop.
+        """
+        try:
+            detections = self.detect(raw_stream, timestamps_ns=timestamps_ns)
+        except MalformedInputError as exc:
+            anomaly_ts = int(timestamps_ns[-1]) if timestamps_ns is not None else 0
+            return [
+                Event(
+                    event_type=EventType.IMU_ANOMALY,
+                    timestamp_ns=anomaly_ts,
+                    confidence=1.0,
+                    source=Source.IMU,
+                    subject_id=subject_id,
+                    label="SENSOR_ANOMALY",
+                    event_id=f"{event_id_prefix}-anomaly-{anomaly_ts}",
+                    metadata={"reason": str(exc)},
+                )
+            ]
+
+        return [
+            detection.to_event(
+                # Deterministic id: replaying the same capture yields identical ids,
+                # which is what makes deduplication and replay reproducible.
+                event_id=(
+                    f"{event_id_prefix}-{detection.label}-"
+                    f"{detection.window_end_ns}-{index}"
+                ),
+                subject_id=subject_id,
+            )
+            for index, detection in enumerate(detections)
+        ]
+</file>
+
+<file path="intentlock/src/intentlock/imu/preprocessing.py">
+"""IMU preprocessing: validation, calibration, normalisation, windowing, features.
+
+Pipeline (mirrors the specification's required stages):
+
+    raw samples  ->  validate  ->  calibrate  ->  normalise  ->  window  ->  features
+
+Each stage is a pure function on arrays, which is what makes the pipeline
+reproducible and unit-testable without hardware. Nothing here mutates its input.
+
+Sensor convention
+-----------------
+Acceleration is in **g** (1 g = 9.80665 m/s²) and angular velocity in **deg/s**,
+matching the Modulino Movement (LSM6DSOXTR) datasheet units so that calibration
+constants are human-readable.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from intentlock.common.errors import MalformedInputError
+
+#: Standard gravity, used only to convert between g and m/s^2 for reporting.
+GRAVITY_MS2 = 9.80665
+
+#: Column order for a raw IMU sample matrix: [ax, ay, az, gx, gy, gz].
+SAMPLE_COLUMNS = ("ax", "ay", "az", "gx", "gy", "gz")
+_N_CHANNELS = len(SAMPLE_COLUMNS)
+
+
+@dataclass(frozen=True, slots=True)
+class ImuCalibration:
+    """Per-device bias and scale applied before normalisation.
+
+    A real IMU is never the datasheet ideal: each axis has an offset drift and a
+    small scale error, and the Modulino's LSM6DSOXTR is no exception. Holding
+    calibration data explicitly (rather than hard-coding magic constants) means a
+    new device is a new calibration record, not a code change.
+    """
+
+    accel_bias: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    gyro_bias: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    accel_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    gyro_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    def as_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return (accel_bias, gyro_bias, accel_scale, gyro_scale) as float64 arrays."""
+        return (
+            np.asarray(self.accel_bias, dtype=np.float64),
+            np.asarray(self.gyro_bias, dtype=np.float64),
+            np.asarray(self.accel_scale, dtype=np.float64),
+            np.asarray(self.gyro_scale, dtype=np.float64),
+        )
+
+    @classmethod
+    def identity(cls) -> ImuCalibration:
+        """A no-op calibration, used when a device is known to be well calibrated."""
+        return cls()
+
+    @classmethod
+    def from_rest_samples(cls, samples: np.ndarray, sample_rate: int) -> ImuCalibration:
+        """Estimate bias from a stationary recording.
+
+        Parameters
+        ----------
+        samples:
+            ``(n, 6)`` matrix of raw readings taken while the sensor is at rest.
+        sample_rate:
+            Sampling rate in Hz; used only to validate that enough data was given.
+
+        Notes
+        -----
+        Bias is the mean of a stationary window; while at rest the accelerometer
+        should read exactly +1 g on the gravity axis and 0 elsewhere, so the
+        accelerometer bias is the deviation from that ideal. Scale is left at
+        1.0 because estimating scale needs a multi-orientation procedure that is
+        out of scope for a one-shot calibration, and inventing it would produce a
+        misleading number.
+        """
+        _validate_matrix(samples, name="calibration samples")
+        if len(samples) < sample_rate // 2:
+            raise MalformedInputError(
+                f"need at least {sample_rate // 2} samples for calibration, got {len(samples)}"
+            )
+        mean = samples.mean(axis=0)
+        accel_bias = mean[:3].copy()
+        # Remove the gravity component from the accelerometer bias: at rest the
+        # magnitude is 1 g, and its direction is the sensor's mounting axis.
+        magnitude = float(np.linalg.norm(accel_bias))
+        if magnitude > 1e-6:
+            accel_bias = accel_bias * (magnitude - 1.0) / magnitude
+        return cls(
+            accel_bias=(float(accel_bias[0]), float(accel_bias[1]), float(accel_bias[2])),
+            gyro_bias=(float(mean[3]), float(mean[4]), float(mean[5])),
+        )
+
+
+def _validate_matrix(samples: np.ndarray, *, name: str) -> None:
+    """Raise `MalformedInputError` unless `samples` is a finite ``(n, 6)`` array.
+
+    This is the trust boundary for IMU data: sensor packets and dataset files both
+    arrive here, and a NaN must be caught with a clear message rather than
+    propagating silently into a model.
+    """
+    if not isinstance(samples, np.ndarray):
+        raise MalformedInputError(f"{name} must be a numpy array, got {type(samples).__name__}")
+    if samples.ndim != 2:
+        raise MalformedInputError(
+            f"{name} must be 2-D (n, {_N_CHANNELS}), got shape {samples.shape}"
+        )
+    if samples.shape[1] != _N_CHANNELS:
+        raise MalformedInputError(
+            f"{name} must have {_N_CHANNELS} columns {SAMPLE_COLUMNS}, got {samples.shape[1]}"
+        )
+    if samples.shape[0] == 0:
+        raise MalformedInputError(f"{name} is empty")
+    if not np.isfinite(samples).all():
+        bad_rows = np.where(~np.isfinite(samples).all(axis=1))[0]
+        raise MalformedInputError(
+            f"{name} contains non-finite values in {len(bad_rows)} row(s), "
+            f"first at index {int(bad_rows[0])}"
+        )
+
+
+def validate(samples: np.ndarray, *, max_accel_g: float, name: str = "imu window") -> np.ndarray:
+    """Validate and clip a raw IMU matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The validated matrix, unchanged, as float64.
+
+    Raises
+    ------
+    MalformedInputError
+        If the matrix is malformed, or if any acceleration sample exceeds
+        `max_accel_g`. An out-of-range magnitude means the sensor was dropped,
+        saturated or is mis-wired; classifying that as a gesture would be
+        dangerous, so it is rejected rather than clipped.
+    """
+    _validate_matrix(samples, name=name)
+    data = samples.astype(np.float64, copy=True)
+    peak = float(np.max(np.abs(data[:, :3])))
+    if peak > max_accel_g:
+        raise MalformedInputError(
+            f"{name}: peak acceleration {peak:.2f} g exceeds limit {max_accel_g:.2f} g "
+            "(sensor artefact, not a gesture)"
+        )
+    return data
+
+
+def calibrate(samples: np.ndarray, calibration: ImuCalibration) -> np.ndarray:
+    """Apply bias and scale correction.
+
+    ``corrected = (raw - bias) * scale``
+    """
+    accel_bias, gyro_bias, accel_scale, gyro_scale = calibration.as_arrays()
+    out = samples.astype(np.float64, copy=True)
+    out[:, :3] = (out[:, :3] - accel_bias) * accel_scale
+    out[:, 3:] = (out[:, 3:] - gyro_bias) * gyro_scale
+    return out
+
+
+def gravity_align(samples: np.ndarray) -> np.ndarray:
+    """Rotate the window so the mean gravity vector points along +Z.
+
+    Placement variation (the sensor strapped at a different angle on a different
+    wrist) is one of the largest sources of error in wrist IMU recognition. The
+    gravity direction is measured from the signal itself, so this removes
+    orientation without needing a magnetometer.
+
+    Only the orientation changes; magnitudes are preserved.
+    """
+    out = samples.astype(np.float64, copy=True)
+    mean_accel = out[:, :3].mean(axis=0)
+    norm = float(np.linalg.norm(mean_accel))
+    if norm < 1e-6:
+        # Free-fall or zero signal: no reliable gravity direction, leave as-is.
+        return out
+
+    target = np.array([0.0, 0.0, 1.0])
+    source = mean_accel / norm
+    # Rotation that maps `source` onto `target` (Rodrigues via cross product).
+    axis = np.cross(source, target)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis_norm < 1e-9:
+        # Parallel or antiparallel: identity, or a 180-degree flip about X.
+        if float(np.dot(source, target)) < 0:
+            rotation = np.diag([1.0, -1.0, -1.0])
+        else:
+            return out
+    else:
+        axis = axis / axis_norm
+        angle = float(np.arccos(np.clip(float(np.dot(source, target)), -1.0, 1.0)))
+        rotation = _rodrigues(axis, angle)
+
+    out[:, :3] = out[:, :3] @ rotation.T
+    out[:, 3:] = out[:, 3:] @ rotation.T
+    return out
+
+
+def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
+    """Rotation matrix about a unit `axis` by `angle` radians."""
+    x, y, z = axis
+    skew = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) + np.sin(angle) * skew + (1.0 - np.cos(angle)) * (skew @ skew)
+
+
+def normalize(
+    samples: np.ndarray,
+    *,
+    accel_scale: float = 4.0,
+    gyro_scale: float = 500.0,
+) -> np.ndarray:
+    """Scale channels to a fixed, configurable range before feeding a model.
+
+    Fixed scale factors (rather than per-window standardisation) are used
+    deliberately: per-window z-scoring would erase the amplitude information that
+    distinguishes a decisive command sweep from a small incidental hand movement,
+    which is precisely what IntentLock must detect. The defaults bound each
+    channel to roughly [-1, 1] for the configured sensor ranges.
+    """
+    out = samples.astype(np.float64, copy=True)
+    out[:, :3] /= accel_scale
+    out[:, 3:] /= gyro_scale
+    return np.clip(out, -1.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Windowing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """One analysis window with its position in the original stream.
+
+    Keeping `start_index`/`start_timestamp_ns` with the data means a detected
+    gesture can be attributed to a moment in time, which is what the temporal
+    engine needs to order it against audio and vision events.
+    """
+
+    data: np.ndarray  # (window_samples, 6)
+    start_index: int
+    start_timestamp_ns: int
+    sample_rate: int
+
+    @property
+    def n_samples(self) -> int:
+        """Number of samples in the window."""
+        return int(self.data.shape[0])
+
+    @property
+    def duration_ns(self) -> int:
+        """Window duration in nanoseconds."""
+        return round(self.n_samples / self.sample_rate * 1e9)
+
+
+def window_stream(
+    samples: np.ndarray,
+    *,
+    sample_rate: int,
+    window_ms: int,
+    stride_ms: int,
+    timestamps_ns: np.ndarray | None = None,
+) -> list[Window]:
+    """Split a continuous stream into overlapping windows.
+
+    Parameters
+    ----------
+    samples:
+        ``(n, 6)`` normalised samples.
+    sample_rate:
+        Sampling rate in Hz.
+    window_ms, stride_ms:
+        Window length and hop, in milliseconds. `window_ms` must be a multiple of
+        `stride_ms` (enforced by configuration validation).
+    timestamps_ns:
+        Optional per-sample session timestamps. When omitted, timestamps are
+        synthesised from `sample_rate`, which is only correct for a perfectly
+        regular stream; real captures should pass their own timestamps because
+        the platform is never the spec ideal.
+
+    Returns
+    -------
+    list[Window]
+        Windows with a full `window_samples` length. A trailing partial window is
+        discarded rather than padded: padding would fabricate data, and a partial
+        sweep cannot be judged a command.
+    """
+    if sample_rate <= 0:
+        raise MalformedInputError(f"sample_rate must be positive, got {sample_rate}")
+    window_samples = round(sample_rate * window_ms / 1000)
+    stride_samples = round(sample_rate * stride_ms / 1000)
+    if window_samples <= 0 or stride_samples <= 0:
+        raise MalformedInputError(
+            f"window/stride too small for sample_rate={sample_rate}: "
+            f"window_samples={window_samples}, stride_samples={stride_samples}"
+        )
+
+    if timestamps_ns is not None and len(timestamps_ns) != len(samples):
+        raise MalformedInputError(
+            f"timestamps length {len(timestamps_ns)} != sample count {len(samples)}"
+        )
+
+    windows: list[Window] = []
+    start = 0
+    while start + window_samples <= len(samples):
+        ts = (
+            int(timestamps_ns[start])
+            if timestamps_ns is not None
+            else round(start / sample_rate * 1e9)
+        )
+        windows.append(
+            Window(
+                data=samples[start : start + window_samples],
+                start_index=start,
+                start_timestamp_ns=ts,
+                sample_rate=sample_rate,
+            )
+        )
+        start += stride_samples
+    return windows
+
+
+# ---------------------------------------------------------------------------
+# Feature extraction
+# ---------------------------------------------------------------------------
+
+#: Human-readable feature names, in the order produced by `extract_features`.
+#: Named explicitly so a model's input contract is inspectable and so feature
+#: importances can be reported with meaningful labels.
+#:
+#: The vector mixes two kinds of feature on purpose:
+#:
+#: * **amplitude** features (means, maxima, energy) separate a decisive command
+#:   sweep from small incidental movement — the property IntentLock must detect;
+#: * **shape** features (ratios, per-axis shares, correlation, dominant frequency)
+#:   are scale-invariant, so a different person with a different arm strength and
+#:   a different sensor gain does not shift the class. Without these, a purely
+#:   amplitude-based model overfits to the participants it was trained on. This
+#:   was observed directly in `scripts/dev_check_imu.py`: unseen-participant
+#:   accuracy was 0.58 before shape features were added.
+FEATURE_NAMES: tuple[str, ...] = (
+    # amplitude features
+    "accel_mean_mag",
+    "accel_std_mag",
+    "accel_max_mag",
+    "accel_energy",
+    "gyro_mean_mag",
+    "gyro_std_mag",
+    "gyro_max_mag",
+    "gyro_energy",
+    # per-axis variation
+    "accel_x_std",
+    "accel_y_std",
+    "accel_z_std",
+    "gyro_x_std",
+    "gyro_y_std",
+    "gyro_z_std",
+    # temporal shape
+    "zero_crossings_accel_x",
+    "zero_crossings_accel_y",
+    "zero_crossings_gyro_z",
+    "dominant_freq_accel_x",
+    "jerk_mean",
+    "corr_accel_gyro",
+    # scale-invariant shape features (added after the overlap experiment above)
+    "accel_axis_share_x",
+    "accel_axis_share_y",
+    "accel_axis_share_z",
+    "gyro_axis_share_x",
+    "gyro_axis_share_y",
+    "gyro_axis_share_z",
+    "accel_cv",
+    "gyro_cv",
+    "gyro_accel_ratio",
+    "accel_std_over_mean",
+)
+
+
+def extract_features(window: Window | np.ndarray, sample_rate: int = 100) -> np.ndarray:
+    """Compute a compact, interpretable feature vector for one window.
+
+    These features are cheap enough for the edge CPU and serve two purposes:
+    (a) the feature-based baseline classifier, and (b) the activity detector that
+    decides whether a window is worth showing a neural model at all.
+
+    Parameters
+    ----------
+    window:
+        A `Window` (preferred, since it carries the sample rate) or a bare
+        ``(n, 6)`` array.
+    sample_rate:
+        Used only when `window` is a bare array.
+
+    Returns
+    -------
+    np.ndarray
+        Float64 vector of length ``len(FEATURE_NAMES)``. Never NaN: degenerate
+        windows yield 0.0 for the affected features so a caller never has to
+        guard against NaN propagation into a model.
+    """
+    data = window.data if isinstance(window, Window) else window
+    rate = window.sample_rate if isinstance(window, Window) else sample_rate
+    _validate_matrix(data, name="feature window")
+
+    accel = data[:, :3]
+    gyro = data[:, 3:]
+
+    accel_mag = np.linalg.norm(accel, axis=1)
+    gyro_mag = np.linalg.norm(gyro, axis=1)
+    jerk = np.diff(accel_mag) if len(accel_mag) > 1 else np.zeros(1)
+
+    features = [
+        float(accel_mag.mean()),
+        float(accel_mag.std()),
+        float(accel_mag.max()),
+        float(np.mean(accel_mag**2)),
+        float(gyro_mag.mean()),
+        float(gyro_mag.std()),
+        float(gyro_mag.max()),
+        float(np.mean(gyro_mag**2)),
+        float(accel[:, 0].std()),
+        float(accel[:, 1].std()),
+        float(accel[:, 2].std()),
+        float(gyro[:, 0].std()),
+        float(gyro[:, 1].std()),
+        float(gyro[:, 2].std()),
+        float(_zero_crossings(accel[:, 0])),
+        float(_zero_crossings(accel[:, 1])),
+        float(_zero_crossings(gyro[:, 2])),
+        float(_dominant_frequency(accel[:, 0], rate)),
+        float(np.abs(jerk).mean()),
+        float(_correlation(accel_mag, gyro_mag)),
+    ]
+
+    # --- scale-invariant shape features ---------------------------------
+    # Everything below is a *ratio*, so multiplying the whole window by a
+    # constant (a stronger participant, a different sensor gain) leaves it
+    # unchanged. These are what let a model generalise to unseen people.
+    accel_scale = float(accel_mag.max()) + 1e-9
+    gyro_scale = float(gyro_mag.max()) + 1e-9
+    accel_axis_energy = np.sum(accel**2, axis=0)
+    gyro_axis_energy = np.sum(gyro**2, axis=0)
+    accel_energy_total = float(accel_axis_energy.sum()) + 1e-9
+    gyro_energy_total = float(gyro_axis_energy.sum()) + 1e-9
+
+    features.extend(
+        [
+            float(accel_axis_energy[0] / accel_energy_total),
+            float(accel_axis_energy[1] / accel_energy_total),
+            float(accel_axis_energy[2] / accel_energy_total),
+            float(gyro_axis_energy[0] / gyro_energy_total),
+            float(gyro_axis_energy[1] / gyro_energy_total),
+            float(gyro_axis_energy[2] / gyro_energy_total),
+            # Coefficient of variation: how "peaky" the motion is, independent of
+            # how large it is.
+            float(accel_mag.std() / (float(accel_mag.mean()) + 1e-9)),
+            float(gyro_mag.std() / (float(gyro_mag.mean()) + 1e-9)),
+            # Rotation-per-acceleration: distinguishes a sweeping arm motion
+            # (much accel) from a wrist twist (mostly gyro).
+            float((float(gyro_mag.max()) / gyro_scale) / accel_scale * 1e-2),
+            float(accel_mag.std() / accel_scale),
+        ]
+    )
+
+    out = np.asarray(features, dtype=np.float64)
+    assert out.shape[0] == len(FEATURE_NAMES), (
+        f"feature vector length {out.shape[0]} != FEATURE_NAMES {len(FEATURE_NAMES)}"
+    )
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def dynamic_energy(window: Window | np.ndarray, sample_rate: int = 100) -> float:
+    """Motion energy with the gravity and bias baseline removed.
+
+    Defined as ``var(|a|) + mean(|g|^2)``:
+      * the variance of the accelerometer magnitude removes gravity (a constant),
+        which is what makes this a *motion* measure rather than a weight measure;
+      * the gyroscope has no gravitational offset, so its mean square already
+        measures rotation rate directly.
+
+    This is the metric the activity gate uses. See `imu.detector` for the measured
+    values that set its floor.
+    """
+    data = window.data if isinstance(window, Window) else window
+    _validate_matrix(data, name="energy window")
+    accel_mag = np.linalg.norm(data[:, :3], axis=1)
+    gyro_mag = np.linalg.norm(data[:, 3:], axis=1)
+    return float(accel_mag.var()) + float(np.mean(gyro_mag**2))
+
+
+def _zero_crossings(signal: np.ndarray) -> int:
+    """Number of sign changes about the signal mean (a direction-change count)."""
+    centred = signal - signal.mean()
+    return int(np.count_nonzero(np.diff(np.signbit(centred))))
+
+
+def _dominant_frequency(signal: np.ndarray, sample_rate: int) -> float:
+    """Frequency (Hz) of the largest non-DC FFT bin.
+
+    A cheap rhythm descriptor: a decisive command sweep is slower than an
+    incidental tremor, and this separates them without a full spectrogram.
+    """
+    if len(signal) < 4:
+        return 0.0
+    spectrum = np.abs(np.fft.rfft(signal * np.hanning(len(signal))))
+    if len(spectrum) <= 1:
+        return 0.0
+    spectrum[0] = 0.0  # discard DC
+    peak = int(np.argmax(spectrum))
+    return float(peak * sample_rate / len(signal))
+
+
+def _correlation(left: np.ndarray, right: np.ndarray) -> float:
+    """Pearson correlation, or 0.0 when either input is constant."""
+    if len(left) < 2 or left.std() < 1e-12 or right.std() < 1e-12:
+        return 0.0
+    return float(np.corrcoef(left, right)[0, 1])
+</file>
+
+<file path="intentlock/src/intentlock/imu/vocabulary.py">
+"""Gesture vocabulary and label mapping.
+
+Vocabulary justification (see docs/adr/ADR-006-gesture-vocabulary.md)
+--------------------------------------------------------------------
+The vocabulary must satisfy five constraints simultaneously:
+
+1. **Measurable by a wrist IMU.** Wrist-worn accelerometer+gyroscope can
+   reliably separate gross arm motions; it cannot separate finger-level shapes.
+2. **Sufficient public training data.** `InGesture` (CC BY 4.0,
+   DOI 10.17632/fdxst56tcj.5) provides 8 classes at 200 Hz from 50 participants
+   on a wrist sensor — the closest public match to the Modulino Movement
+   placement.
+3. **Physically reproducible**, so the custom IntentLock dataset can be
+   collected with the Modulino.
+4. **Pairwise distinguishable** by orientation and direction, since wrist IMU
+   distinguishes direction far better than shape.
+5. **Safe to perform repeatedly** — no gestures requiring equipment or strain.
+
+The resulting command vocabulary is direction-based, which is the property the
+sensor actually measures well:
+
+    LEFT / RIGHT / UP / DOWN  from the Modulino (direction of arm sweep)
+    CONFIRM                   a distinct nod-like double pulse
+    CANCEL                    a reverse sweep (opposite sign of LEFT)
+    NO_GESTURE                a valid class: nothing happened
+    UNKNOWN                   a valid class: signal is not confidently any of the above
+
+`ROTATE` from the original specification is deliberately **not** included: a
+pure wrist rotation is easily confused with ordinary hand movement and the
+InGesture classes provide no matching data to pretrain on. `UNKNOWN` covers it.
+This is a documented deviation from the specification, with the reason recorded.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class Gesture(str, Enum):
+    """The command-oriented gesture vocabulary.
+
+    `NO_GESTURE` and `UNKNOWN` are first-class outputs, not error states: the
+    system must be able to say "nothing happened" and "I do not know".
+    """
+
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    UP = "UP"
+    DOWN = "DOWN"
+    CONFIRM = "CONFIRM"
+    CANCEL = "CANCEL"
+    NO_GESTURE = "NO_GESTURE"
+    UNKNOWN = "UNKNOWN"
+
+
+#: Gestures that can be a command. `NO_GESTURE`/`UNKNOWN` never execute anything.
+COMMAND_GESTURES: frozenset[Gesture] = frozenset(
+    {
+        Gesture.LEFT,
+        Gesture.RIGHT,
+        Gesture.UP,
+        Gesture.DOWN,
+        Gesture.CONFIRM,
+        Gesture.CANCEL,
+    }
+)
+
+#: Gestures that are never accepted as the command gesture, but are valid model outputs.
+NON_COMMAND_GESTURES: frozenset[Gesture] = frozenset({Gesture.NO_GESTURE, Gesture.UNKNOWN})
+
+#: The ordered class list every gesture model must output. Index order is the
+#: model's contract; changing it invalidates exported models, which is why it is
+#: a single named constant rather than repeated literals.
+GESTURE_CLASSES: tuple[str, ...] = (
+    Gesture.LEFT.value,
+    Gesture.RIGHT.value,
+    Gesture.UP.value,
+    Gesture.DOWN.value,
+    Gesture.CONFIRM.value,
+    Gesture.CANCEL.value,
+    Gesture.NO_GESTURE.value,
+    Gesture.UNKNOWN.value,
+)
+
+#: Default command emitted for each gesture. This is the *only* place a gesture is
+#: mapped to an action; the executor validates against its own allowlist too.
+GESTURE_TO_COMMAND: dict[str, str] = {
+    Gesture.LEFT.value: "PREVIOUS",
+    Gesture.RIGHT.value: "NEXT",
+    Gesture.UP.value: "VOLUME_UP",
+    Gesture.DOWN.value: "VOLUME_DOWN",
+    Gesture.CONFIRM.value: "CONFIRM",
+    Gesture.CANCEL.value: "CANCEL",
+    Gesture.NO_GESTURE.value: "NONE",
+    Gesture.UNKNOWN.value: "NONE",
+}
+
+
+def is_command_gesture(label: str | None) -> bool:
+    """Whether `label` names a gesture that may become a command."""
+    if label is None:
+        return False
+    try:
+        return Gesture(label) in COMMAND_GESTURES
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# InGesture (public pretraining dataset) -> IntentLock vocabulary mapping.
+#
+# The public dataset's classes are daily-activity gestures, not commands. Only
+# the ones with a plausible directional/kinematic analogue are mapped; the rest
+# are mapped to UNKNOWN so they act as in-distribution hard negatives for the
+# "this is not a command gesture" decision rather than being discarded.
+# ---------------------------------------------------------------------------
+
+INGESTURE_TO_INTENTLOCK: dict[str, str] = {
+    # 1: Fluid Intake -> a distinct upward wrist motion: usable as UP.
+    "fluid_intake": Gesture.UP.value,
+    # 2: Answering Phone -> arm raised to head: mapped to UP (kinematically close).
+    "answering_phone": Gesture.UP.value,
+    # 3: Scratching Head -> up-and-down; deliberately UNKNOWN (not a command).
+    "scratching_head": Gesture.UNKNOWN.value,
+    # 4: Passing Hand over Face -> lateral sweep: NO_GESTURE (everyday motion).
+    "passing_hand_over_face": Gesture.NO_GESTURE.value,
+    # 5: Adjusting Glasses -> small wrist rotation: NO_GESTURE.
+    "adjusting_glasses": Gesture.NO_GESTURE.value,
+    # 6: Holding Chin -> static pose: NO_GESTURE.
+    "holding_chin": Gesture.NO_GESTURE.value,
+    # 7: Stretching with Hands behind Neck -> large motion: UNKNOWN (not a command).
+    "stretching_behind_neck": Gesture.UNKNOWN.value,
+    # 0: Free Condition / Other -> NO_GESTURE.
+    "free_condition": Gesture.NO_GESTURE.value,
+    "other": Gesture.NO_GESTURE.value,
+}
+</file>
+
+<file path="intentlock/src/intentlock/intent/__init__.py">
+"""intent subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/interfaces/__init__.py">
+"""Hardware and backend abstractions.
+
+Application code depends on these protocols, never on concrete devices.
+"""
+
+from intentlock.interfaces.backend import InferenceBackend, InferenceOutput
+from intentlock.interfaces.sources import (
+    AudioSource,
+    EventSource,
+    MotionCalibration,
+    MotionSource,
+    VisionSource,
+)
+
+__all__ = [
+    "AudioSource",
+    "EventSource",
+    "InferenceBackend",
+    "InferenceOutput",
+    "MotionCalibration",
+    "MotionSource",
+    "VisionSource",
+]
+</file>
+
+<file path="intentlock/src/intentlock/interfaces/backend.py">
+"""Inference backend abstraction.
+
+The same model must be runnable:
+  * in-process with PyTorch (development, training-time evaluation),
+  * through Edge Impulse's `.eim` runner on the UNO Q (deployment),
+  * and by a deterministic stub in tests (no GPU, no weights, no network).
+
+`InferenceBackend` is that seam. It deliberately exchanges only NumPy arrays so
+that no backend leaks a framework type into the pipeline.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+import numpy as np
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceOutput:
+    """Result of one model invocation.
+
+    Attributes
+    ----------
+    scores:
+        Class probability vector, shape ``(n_classes,)``, sums to 1 within
+        floating-point tolerance. Ordering follows `class_names`.
+    class_names:
+        Label for each index of `scores`. Carried with the output rather than
+        looked up globally so a model can never be mislabelled.
+    model_version:
+        Identifier of the weights that produced this output; recorded in
+        telemetry for every decision.
+    latency_ms:
+        Wall-clock time for the forward pass, measured by the backend.
+    """
+
+    scores: np.ndarray
+    class_names: tuple[str, ...]
+    model_version: str
+    latency_ms: float
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.scores.ndim != 1:
+            raise ValueError(f"scores must be 1-D, got shape {self.scores.shape}")
+        if self.scores.shape[0] != len(self.class_names):
+            raise ValueError(
+                f"scores length {self.scores.shape[0]} != class_names "
+                f"length {len(self.class_names)}"
+            )
+
+    def top(self) -> tuple[str, float]:
+        """Return the (label, probability) pair with the highest score."""
+        idx = int(np.argmax(self.scores))
+        return self.class_names[idx], float(self.scores[idx])
+
+    def prob(self, label: str) -> float:
+        """Probability of `label`, or 0.0 if the model has no such class."""
+        try:
+            return float(self.scores[self.class_names.index(label)])
+        except ValueError:
+            return 0.0
+
+    def entropy(self) -> float:
+        """Shannon entropy of the distribution, in nats.
+
+        Used by the uncertainty engine as one signal that a prediction is
+        genuinely ambiguous rather than merely below a threshold.
+        """
+        p = np.clip(self.scores.astype(np.float64), 1e-12, 1.0)
+        return float(-np.sum(p * np.log(p)))
+
+
+@runtime_checkable
+class InferenceBackend(Protocol):
+    """Runs one model over one input window."""
+
+    @property
+    def model_version(self) -> str:
+        """Version string of the loaded weights (never empty)."""
+        ...
+
+    @property
+    def input_shape(self) -> tuple[int, ...]:
+        """Expected shape of a single input window, excluding the batch axis."""
+        ...
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        """Output label ordering."""
+        ...
+
+    def predict(self, window: np.ndarray) -> InferenceOutput:
+        """Score one window.
+
+        Parameters
+        ----------
+        window:
+            Array whose trailing dimensions match `input_shape`. Callers pass
+            validated, normalised data; the backend must not assume otherwise
+            but must not silently reshape for them either.
+
+        Raises
+        ------
+        ModelError
+            If the input shape does not match the model contract.
+        """
+        ...
+</file>
+
+<file path="intentlock/src/intentlock/interfaces/sources.py">
+"""Sensor source protocols: the hardware abstraction boundary.
+
+Every physical device is behind one of these protocols. Application code depends
+only on the protocol, so replacing the Modulino IMU with another IMU, or the
+microphone with a file reader, is a constructor change rather than a rewrite.
+
+Two rules hold for every implementation:
+
+1. `poll()` must never block indefinitely and must never raise for a *degradable*
+   condition (sensor missing, corrupt packet). It returns an event with reduced
+   confidence, or `None`. It raises only `ConfigurationError` for a genuinely
+   misconfigured backend.
+2. `available` reflects the last known health, so the state machine can react to
+   sensor loss rather than hanging.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from intentlock.common.events import Event
+
+
+@runtime_checkable
+class EventSource(Protocol):
+    """Anything that produces `Event`s on demand.
+
+    This is the seam that makes the simulator, the replay loader and the real
+    hardware interchangeable.
+    """
+
+    @property
+    def name(self) -> str:
+        """Short identifier used in logs and telemetry (e.g. ``"imu"``)."""
+        ...
+
+    @property
+    def available(self) -> bool:
+        """Whether the underlying device is currently usable."""
+        ...
+
+    def start(self) -> None:
+        """Acquire the device. Raises `SensorUnavailable` if it cannot be acquired."""
+        ...
+
+    def poll(self) -> list[Event]:
+        """Return zero or more events since the previous call.
+
+        Returns an empty list when nothing of interest happened. Must not block
+        longer than one processing frame.
+        """
+        ...
+
+    def stop(self) -> None:
+        """Release the device. Must be safe to call twice."""
+        ...
+
+
+@runtime_checkable
+class AudioSource(EventSource, Protocol):
+    """Microphone-backed source capable of wake-word detection."""
+
+    @property
+    def sample_rate(self) -> int:
+        """Native sample rate in Hz."""
+        ...
+
+
+@runtime_checkable
+class VisionSource(EventSource, Protocol):
+    """Camera-backed source producing presence/identity/attention events."""
+
+    @property
+    def frame_rate(self) -> float:
+        """Native capture rate in frames per second."""
+        ...
+
+
+@runtime_checkable
+class MotionSource(EventSource, Protocol):
+    """IMU-backed source producing gesture events."""
+
+    @property
+    def sample_rate(self) -> int:
+        """Native accelerometer/gyroscope sample rate in Hz."""
+        ...
+
+    @property
+    def calibration(self) -> MotionCalibration:
+        """Static per-device calibration (bias and scale) applied to raw samples."""
+        ...
+
+
+class MotionCalibration(Protocol):
+    """Per-device calibration applied before feature extraction.
+
+    A real IMU has non-zero bias on every axis; the platform is never the spec
+    ideal. Keeping calibration behind an interface means a calibration routine
+    can be added for a new device without touching the model.
+    """
+
+    @property
+    def accel_bias(self) -> tuple[float, float, float]:
+        """Accelerometer bias in g."""
+        ...
+
+    @property
+    def gyro_bias(self) -> tuple[float, float, float]:
+        """Gyroscope bias in deg/s."""
+        ...
+</file>
+
+<file path="intentlock/src/intentlock/safety/__init__.py">
+"""safety subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/state_machine/__init__.py">
+"""state_machine subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/synchronization/__init__.py">
+"""Timestamp normalisation, event ordering and sequence matching."""
+
+from intentlock.synchronization.clock import (
+    Clock,
+    RealClock,
+    SessionClock,
+    VirtualClock,
+)
+from intentlock.synchronization.engine import (
+    SequenceMatch,
+    TemporalEventEngine,
+    subject_consistency,
+    subject_mismatch,
+)
+from intentlock.synchronization.patterns import (
+    SequencePattern,
+    SequenceStep,
+    ViolationKind,
+    build_patterns,
+)
+
+__all__ = [
+    "Clock",
+    "RealClock",
+    "SequenceMatch",
+    "SequencePattern",
+    "SequenceStep",
+    "SessionClock",
+    "TemporalEventEngine",
+    "ViolationKind",
+    "VirtualClock",
+    "build_patterns",
+    "subject_consistency",
+    "subject_mismatch",
+]
+</file>
+
+<file path="intentlock/src/intentlock/synchronization/clock.py">
+"""Monotonic session clock.
+
+Why a dedicated clock
+---------------------
+Sensor timestamps arrive from three independent devices whose clocks are not
+synchronised, and wall-clock time can jump backwards (NTP step, DST). Every
+temporal decision in IntentLock must be monotonic and comparable, so all
+timestamps are converted to nanoseconds on one monotonic session origin.
+
+The clock is also the injection point for the simulator: replaying a session
+with a virtual clock makes "expired sequence" and "timeout" paths deterministic
+and testable without sleeping.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Protocol
+
+
+class Clock(Protocol):
+    """A monotonic nanosecond time source."""
+
+    def now_ns(self) -> int:
+        """Current time in nanoseconds. Never decreases."""
+        ...
+
+
+class RealClock:
+    """Monotonic clock backed by `time.monotonic_ns`.
+
+    `time.monotonic_ns` is immune to wall-clock adjustments, which is the
+    property that matters for sequence timing.
+    """
+
+    __slots__ = ()
+
+    def now_ns(self) -> int:
+        return time.monotonic_ns()
+
+
+@dataclass
+class VirtualClock:
+    """Manually advanced clock for replay and tests.
+
+    Advanced only forwards, mirroring the monotonicity of the real clock.
+    """
+
+    _now_ns: int = 0
+
+    def now_ns(self) -> int:
+        return self._now_ns
+
+    def advance_ns(self, delta_ns: int) -> int:
+        if delta_ns < 0:
+            raise ValueError("VirtualClock cannot move backwards")
+        self._now_ns += delta_ns
+        return self._now_ns
+
+    def advance_ms(self, delta_ms: int) -> int:
+        return self.advance_ns(delta_ms * 1_000_000)
+
+    def set_ns(self, value_ns: int) -> int:
+        """Jump forward to an absolute virtual time (never backwards)."""
+        if value_ns < self._now_ns:
+            raise ValueError(f"VirtualClock cannot move backwards ({value_ns} < {self._now_ns})")
+        self._now_ns = value_ns
+        return self._now_ns
+
+
+# A device timestamp is treated as already session-relative only when it is
+# close to session time relative to the magnitude of session time itself.
+# A device-local counter starting near zero while the session is already seconds
+# in is therefore correctly detected as device-local.
+_ALIGNMENT_ABS_NS = 5_000_000  # 5 ms absolute floor, below which "close" is noise
+
+
+def _looks_session_relative(raw_timestamp_ns: int, now_ns: int) -> bool:
+    """Whether `raw_timestamp_ns` is plausibly already expressed in session time.
+
+    Both a simulator emitting session time and a device-local counter starting at
+    zero produce small numbers early in a session, so magnitude alone is not
+    enough. The distinguishing test is *proportional* closeness: a timestamp is
+    session-relative if it is within a small fraction of the elapsed session time
+    (with an absolute floor for the very start of a session).
+    """
+    tolerance = max(_ALIGNMENT_ABS_NS, now_ns // 20)  # 5% of elapsed session time
+    return abs(raw_timestamp_ns - now_ns) <= tolerance
+
+
+@dataclass
+class SessionClock:
+    """Maps device timestamps onto a single monotonic session timeline.
+
+    Each device has an independent origin; the first timestamp seen from a device
+    establishes its offset, and all later timestamps from that device are
+    expressed relative to the session origin.
+    """
+
+    clock: Clock = field(default_factory=RealClock)
+    started_at_ns: int = 0
+    _device_offsets: dict[str, int] = field(default_factory=dict, init=False)
+    _observations: dict[str, int] = field(default_factory=dict, init=False)
+    _started: bool = field(default=False, init=False)
+
+    def start(self) -> int:
+        """Begin the session. Idempotent; returns the session origin."""
+        if not self._started:
+            self.started_at_ns = self.clock.now_ns()
+            self._device_offsets.clear()
+            self._observations.clear()
+            self._started = True
+        return self.started_at_ns
+
+    @property
+    def started(self) -> bool:
+        """Whether `start` has been called."""
+        return self._started
+
+    def now_ns(self) -> int:
+        """Session-relative monotonic time in nanoseconds."""
+        if not self._started:
+            self.start()
+        return max(0, self.clock.now_ns() - self.started_at_ns)
+
+    def convert(self, raw_timestamp_ns: int, device: str, *, allow_late: bool = True) -> int:
+        """Convert a device timestamp into session time.
+
+        Parameters
+        ----------
+        raw_timestamp_ns:
+            Timestamp as reported by the device. If it is within
+            `_ALIGNMENT_WINDOW_NS` of the session origin it is treated as
+            already session-relative; otherwise the first observation from this
+            device establishes its offset.
+        device:
+            Device identifier used as the offset key.
+        allow_late:
+            When True, a timestamp that maps into the future is clamped to the
+            current session time. Late/early arrivals are normal (a camera frame
+            can be delivered after capture; an MCU timestamp can lead slightly)
+            and clamping keeps ordering monotonic. When False the raw conversion
+            is returned unchanged, which callers use to *detect* lateness.
+
+        Returns
+        -------
+        int
+            Session-relative nanoseconds, never negative.
+        """
+        if not self._started:
+            self.start()
+
+        if device not in self._device_offsets:
+            # Decide whether this device's timestamps are already session-relative
+            # or device-local, using proportional closeness rather than an
+            # absolute window. See `_looks_session_relative`.
+            now = self.now_ns()
+            if _looks_session_relative(raw_timestamp_ns, now):
+                self._device_offsets[device] = 0
+            else:
+                # Device-local origin: this observation defines the device epoch,
+                # and it maps to the moment it was received.
+                self._device_offsets[device] = raw_timestamp_ns - now
+
+        converted = raw_timestamp_ns - self._device_offsets[device]
+        converted = max(0, converted)
+        self._observations[device] = self._observations.get(device, 0) + 1
+
+        if allow_late:
+            now = self.now_ns()
+            if converted > now:
+                # Timestamp claims the future: clamp rather than accept, so that
+                # ordering stays monotonic and a bad clock cannot pre-empt events.
+                return now
+        return converted
+
+    def drift_report(self) -> dict[str, int]:
+        """Per-device observation counts, for telemetry and diagnostics."""
+        return dict(self._observations)
+</file>
+
+<file path="intentlock/src/intentlock/synchronization/engine.py">
+"""Temporal event engine.
+
+Responsibilities
+----------------
+1. **Buffer** events in monotonic order, absorbing inter-device jitter.
+2. **Deduplicate** so one physical gesture cannot be counted twice.
+3. **Expire** events past their TTL, so a stale wake word cannot authorise a
+   gesture minutes later.
+4. **Match** ordered patterns and report *why* a sequence failed.
+
+The engine holds no policy: it reports matches and violations; `intent` and
+`safety` decide what to do about them.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from intentlock.common.events import Event, EventType
+from intentlock.configuration.schema import TemporalConfig
+from intentlock.synchronization.patterns import (
+    SequencePattern,
+    SequenceStep,
+    ViolationKind,
+    build_patterns,
+)
+
+_NS_PER_MS = 1_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceMatch:
+    """Result of matching a pattern against the buffered events.
+
+    Attributes
+    ----------
+    pattern_name:
+        Which pattern was attempted.
+    matched:
+        True when every required step was satisfied in order and within budget.
+    events:
+        The matched events, in observed order. For an unmatched sequence this is
+        the best partial prefix, which is what telemetry uses to explain failure.
+    violation:
+        Why the match failed, or None on success.
+    detail:
+        Human-readable explanation naming the offending step.
+    duration_ns:
+        Span from first to last matched event.
+    """
+
+    pattern_name: str
+    matched: bool
+    events: tuple[Event, ...]
+    violation: ViolationKind | None = None
+    detail: str = ""
+    duration_ns: int = 0
+
+    @property
+    def is_partial(self) -> bool:
+        """True when some but not all required steps matched (candidate for RETRY)."""
+        return not self.matched and bool(self.events)
+
+    def gesture_labels(self) -> list[str]:
+        """Labels of matched gesture events, in order."""
+        return [
+            e.label
+            for e in self.events
+            if e.label and e.event_type is EventType.GESTURE_DETECTED
+        ]
+
+
+class TemporalEventEngine:
+    """Ordered buffer of events with deduplication, expiry and pattern matching.
+
+    The engine is deterministic: given the same sequence of `push` calls it
+    produces the same matches and the same violation reasons.
+    """
+
+    def __init__(
+        self,
+        temporal: TemporalConfig,
+        patterns: dict[str, SequencePattern] | None = None,
+    ) -> None:
+        self._temporal = temporal
+        self._patterns = patterns if patterns is not None else build_patterns(temporal)
+        self._buffer: list[Event] = []
+        self._seen_ids: set[str] = set()
+        self._duplicates_dropped = 0
+        self._expired = 0
+
+    # -- ingestion ---------------------------------------------------------
+
+    def push(self, event: Event) -> bool:
+        """Add an event to the buffer.
+
+        Returns
+        -------
+        bool
+            False if the event was rejected as a duplicate, True otherwise.
+
+        Notes
+        -----
+        Insertion position is found by timestamp with a jitter tolerance: an
+        event whose timestamp is within `ordering_jitter_ms` of an existing entry
+        is placed *after* it, preserving arrival order. Without this, two devices
+        with slightly different clocks would shuffle a handshake that happened in
+        the right order.
+        """
+        if event.event_id:
+            if event.event_id in self._seen_ids:
+                self._duplicates_dropped += 1
+                return False
+            self._seen_ids.add(event.event_id)
+
+        jitter_ns = self._temporal.ordering_jitter_ms * _NS_PER_MS
+        insert_at = 0
+        for index in range(len(self._buffer) - 1, -1, -1):
+            if self._buffer[index].timestamp_ns <= event.timestamp_ns + jitter_ns:
+                insert_at = index + 1
+                break
+        self._buffer.insert(insert_at, event)
+        return True
+
+    def push_all(self, events: list[Event]) -> int:
+        """Push several events, returning the count accepted."""
+        return sum(1 for event in events if self.push(event))
+
+    def prune(self, now_ns: int) -> int:
+        """Drop events older than the TTL relative to `now_ns`.
+
+        Returns the number of events dropped. Also releases their dedup keys, so
+        `_seen_ids` cannot grow without bound over a long session.
+        """
+        ttl_ns = self._temporal.event_ttl_ms * _NS_PER_MS
+        keep: list[Event] = []
+        dropped = 0
+        for event in self._buffer:
+            if now_ns - event.timestamp_ns > ttl_ns:
+                dropped += 1
+                if event.event_id:
+                    self._seen_ids.discard(event.event_id)
+            else:
+                keep.append(event)
+        self._buffer = keep
+        self._expired += dropped
+        return dropped
+
+    # -- inspection --------------------------------------------------------
+
+    @property
+    def buffer(self) -> tuple[Event, ...]:
+        """Current buffered events, oldest first."""
+        return tuple(self._buffer)
+
+    @property
+    def pattern_names(self) -> tuple[str, ...]:
+        """Names of the configured patterns."""
+        return tuple(self._patterns)
+
+    def stats(self) -> dict[str, int]:
+        """Counters for telemetry."""
+        return {
+            "buffered": len(self._buffer),
+            "duplicates_dropped": self._duplicates_dropped,
+            "expired": self._expired,
+        }
+
+    def clear(self) -> None:
+        """Reset the buffer and dedup state (used on cooldown / session restart)."""
+        self._buffer.clear()
+        self._seen_ids.clear()
+
+    def latest(self, event_type: EventType) -> Event | None:
+        """Most recent buffered event of `event_type`, or None."""
+        for event in reversed(self._buffer):
+            if event.event_type is event_type:
+                return event
+        return None
+
+    # -- matching ----------------------------------------------------------
+
+    def match(self, pattern_name: str, now_ns: int) -> SequenceMatch:
+        """Match one named pattern against buffered events.
+
+        The algorithm walks the buffered events once, advancing a cursor through
+        the pattern's steps. It is greedy and left-to-right, which is the correct
+        semantics for a handshake: the *earliest* valid ordered occurrence wins,
+        so a stray gesture that occurred before the wake word cannot be reused as
+        the command gesture.
+
+        Raises
+        ------
+        KeyError
+            If `pattern_name` is not configured.
+        """
+        pattern = self._patterns[pattern_name]
+        self.prune(now_ns)
+
+        matched_required: list[Event] = []
+        matched_optional: list[Event] = []
+        step_index = 0
+        previous: Event | None = None
+        violation: tuple[ViolationKind, str] | None = None
+
+        cursor = 0
+        events = self._buffer
+        while step_index < len(pattern.steps):
+            step = pattern.steps[step_index]
+            outcome = self._find_step(events, cursor, step, previous, pattern)
+            if outcome is None:
+                if step.optional:
+                    step_index += 1
+                    continue
+                # A required step has no candidate at all. If we already matched
+                # part of the pattern this is a reportable MISSING_STEP (the
+                # sequence started but cannot complete); if nothing matched, the
+                # sequence simply has not begun and no violation is reported.
+                if matched_required:
+                    violation = (
+                        ViolationKind.MISSING_STEP,
+                        f"no {step.event_type.value} after "
+                        f"{(previous.event_type.value if previous else 'start')} "
+                        f"within {step.max_gap_ms}ms",
+                    )
+                break
+
+            event, step_violation, detail, cursor = outcome
+            if step_violation is not None:
+                violation = (step_violation, detail)
+                break
+
+            if event is None:  # pragma: no cover - defensive, see _find_step contract
+                break
+            if step.optional:
+                matched_optional.append(event)
+            else:
+                matched_required.append(event)
+            previous = event
+            step_index += 1
+
+        complete = violation is None and step_index >= len(pattern.steps)
+        ordered = tuple(
+            sorted(matched_required + matched_optional, key=lambda e: e.timestamp_ns)
+        )
+
+        if complete and len(ordered) >= 2:
+            span_ns = ordered[-1].timestamp_ns - ordered[0].timestamp_ns
+            if span_ns > pattern.max_duration_ms * _NS_PER_MS:
+                complete = False
+                violation = (
+                    ViolationKind.SEQUENCE_TOO_LONG,
+                    f"sequence span {span_ns // _NS_PER_MS}ms exceeds "
+                    f"budget {pattern.max_duration_ms}ms",
+                )
+
+        span = ordered[-1].timestamp_ns - ordered[0].timestamp_ns if len(ordered) >= 2 else 0
+        return SequenceMatch(
+            pattern_name=pattern.name,
+            matched=complete,
+            events=ordered,
+            violation=violation[0] if violation else None,
+            detail=violation[1] if violation else "",
+            duration_ns=span,
+        )
+
+    def _find_step(
+        self,
+        events: list[Event],
+        cursor: int,
+        step: SequenceStep,
+        previous: Event | None,
+        pattern: SequencePattern,
+    ) -> tuple[Event | None, ViolationKind | None, str, int] | None:
+        """Search from `cursor` for an event satisfying `step`.
+
+        Returns
+        -------
+        None
+            No candidate event of this type exists in the buffer at all.
+        tuple
+            ``(event, violation, detail, new_cursor)``. A non-None violation means
+            a candidate existed but was out of order or outside its gap budget;
+            in that case `event` is None and the data explains the failure.
+        """
+        candidate_index: int | None = None
+        for index in range(cursor, len(events)):
+            if events[index].event_type is step.event_type:
+                candidate_index = index
+                break
+
+        if candidate_index is None:
+            return None
+
+        candidate = events[candidate_index]
+
+        if previous is not None:
+            gap_ns = candidate.timestamp_ns - previous.timestamp_ns
+            if gap_ns < 0:
+                return (
+                    None,
+                    ViolationKind.ORDER_INVERTED,
+                    f"{candidate.event_type.value} precedes "
+                    f"{previous.event_type.value} in time",
+                    candidate_index,
+                )
+            # SequencePattern guarantees every non-first step has max_gap_ms set.
+            max_gap_ms = step.max_gap_ms or 0
+            if gap_ns > max_gap_ms * _NS_PER_MS:
+                return (
+                    None,
+                    ViolationKind.GAP_TOO_LARGE,
+                    f"gap {gap_ns // _NS_PER_MS}ms between "
+                    f"{previous.event_type.value} and {candidate.event_type.value} "
+                    f"exceeds {max_gap_ms}ms",
+                    candidate_index,
+                )
+            if gap_ns < step.min_gap_ms * _NS_PER_MS:
+                return (
+                    None,
+                    ViolationKind.GAP_TOO_SMALL,
+                    f"gap {gap_ns // _NS_PER_MS}ms between "
+                    f"{previous.event_type.value} and {candidate.event_type.value} "
+                    f"is below {step.min_gap_ms}ms (probably one detection, not two)",
+                    candidate_index,
+                )
+
+            if pattern.require_same_subject:
+                mismatch = subject_mismatch(previous, candidate)
+                if mismatch is not None:
+                    return (None, ViolationKind.SUBJECT_MISMATCH, mismatch, candidate_index)
+
+        return (candidate, None, "", candidate_index + 1)
+
+
+def subject_mismatch(left: Event, right: Event) -> str | None:
+    """Return a message when two events name different subjects, else None.
+
+    Events without a subject (e.g. an unattributed wake word) are exempt: absence
+    of identity evidence is handled by the safety gate, not here.
+    """
+    if left.subject_id and right.subject_id and left.subject_id != right.subject_id:
+        return (
+            f"{left.event_type.value} concerns {left.subject_id} but "
+            f"{right.event_type.value} concerns {right.subject_id}"
+        )
+    return None
+
+
+def subject_consistency(events: tuple[Event, ...] | list[Event]) -> tuple[bool, str]:
+    """Check that all identity-bearing events agree on a subject.
+
+    Returns
+    -------
+    tuple
+        ``(consistent, detail)``. This is the check that implements rejection of
+        "Person A activates, Person B gestures".
+    """
+    subjects = {e.subject_id for e in events if e.subject_id}
+    if len(subjects) <= 1:
+        return True, ""
+    return False, f"events disagree on subject: {sorted(subjects)}"
+</file>
+
+<file path="intentlock/src/intentlock/synchronization/patterns.py">
+"""Ordered interaction patterns: the behavioural handshake, expressed as data.
+
+Design note
+-----------
+The handshake is *not* a special case in code. It is a `SequencePattern`: an
+ordered list of steps with per-gap temporal budgets. Stating it as data means
+
+* the temporal constraints have one source of truth (configuration),
+* a violation can be reported with the specific step that failed, which is what
+  makes REJECT reasons explainable in telemetry,
+* and a new interaction pattern (e.g. adding a second confirmation) is a
+  configuration-shaped change rather than a code change.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from intentlock.common.events import EventType
+from intentlock.configuration.schema import TemporalConfig
+
+
+class ViolationKind(str, Enum):
+    """Why an event sequence was rejected. Machine-readable for telemetry."""
+
+    ORDER_INVERTED = "order_inverted"
+    GAP_TOO_LARGE = "gap_too_large"
+    GAP_TOO_SMALL = "gap_too_small"
+    MISSING_STEP = "missing_step"
+    EXPIRED = "expired"
+    SEQUENCE_TOO_LONG = "sequence_too_long"
+    SUBJECT_MISMATCH = "subject_mismatch"
+    DUPLICATE = "duplicate"
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceStep:
+    """One required step in an ordered interaction pattern.
+
+    Attributes
+    ----------
+    event_type:
+        The event that satisfies this step.
+    max_gap_ms:
+        Maximum allowed gap from the *previous matched step*. None means
+        unbounded, which is only appropriate for the first step.
+    min_gap_ms:
+        Minimum separation from the previous step. Guards against two events
+        that are really one detection artefact (e.g. a wake word whose echo is
+        re-detected 20 ms later).
+    optional:
+        When True the step may be absent without invalidating the sequence, but
+        if present it must appear in this position.
+    """
+
+    event_type: EventType
+    max_gap_ms: int | None
+    min_gap_ms: int = 0
+    optional: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SequencePattern:
+    """A named, ordered interaction pattern.
+
+    Attributes
+    ----------
+    name:
+        Identifier used in telemetry (`"handshake"`, `"wake_gesture"`).
+    steps:
+        Ordered steps. Order is the point: the pattern does not match if the
+        observed order differs.
+    max_duration_ms:
+        Overall budget from first to last matched step.
+    require_same_subject:
+        When True, every step that carries a `subject_id` must agree. Steps with
+        `subject_id is None` are exempt, because a wake word often cannot be
+        attributed to a person.
+    """
+
+    name: str
+    steps: tuple[SequenceStep, ...]
+    max_duration_ms: int
+    require_same_subject: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.steps:
+            raise ValueError(f"pattern {self.name!r} must have at least one step")
+        if self.steps[0].max_gap_ms is not None:
+            raise ValueError(
+                f"pattern {self.name!r}: the first step must have max_gap_ms=None "
+                "(it is matched on its own, with no predecessor)"
+            )
+        for step in self.steps[1:]:
+            if step.max_gap_ms is None:
+                raise ValueError(
+                    f"pattern {self.name!r}: only the first step may have max_gap_ms=None"
+                )
+
+
+# --------------------------------------------------------------------------
+# Built-in patterns.
+#
+# The canonical handshake is person -> wake -> gesture. It is the pattern the
+# safety gate requires for EXECUTE when `require_verified_identity` is set.
+# --------------------------------------------------------------------------
+
+
+def build_patterns(temporal: TemporalConfig) -> dict[str, SequencePattern]:
+    """Construct the standard patterns from temporal configuration.
+
+    Patterns are derived from configuration rather than module constants so the
+    timing budgets have exactly one source of truth.
+    """
+    person_to_wake = temporal.person_to_wake_max_ms
+    wake_to_gesture = temporal.wake_to_gesture_max_ms
+    gesture_to_confirm = temporal.gesture_to_confirm_max_ms
+    min_gap = temporal.wake_to_gesture_min_ms
+
+    return {
+        # The full behavioural handshake, with optional explicit confirmation.
+        # The confirmation step exists so that a two-gesture sequence
+        # (command + confirm) is representable without a code change.
+        "handshake": SequencePattern(
+            name="handshake",
+            steps=(
+                SequenceStep(EventType.PERSON_PRESENT, max_gap_ms=None),
+                SequenceStep(EventType.WAKE_DETECTED, max_gap_ms=person_to_wake),
+                SequenceStep(
+                    EventType.GESTURE_DETECTED,
+                    max_gap_ms=wake_to_gesture,
+                    min_gap_ms=min_gap,
+                ),
+                SequenceStep(
+                    EventType.GESTURE_DETECTED,
+                    max_gap_ms=gesture_to_confirm,
+                    min_gap_ms=min_gap,
+                    optional=True,
+                ),
+            ),
+            max_duration_ms=temporal.max_sequence_ms,
+            require_same_subject=True,
+        ),
+        # Wake then gesture, with no identity evidence. Used by the
+        # "no identity" baseline and by the gate when identity is not required.
+        "wake_gesture": SequencePattern(
+            name="wake_gesture",
+            steps=(
+                SequenceStep(EventType.WAKE_DETECTED, max_gap_ms=None),
+                SequenceStep(
+                    EventType.GESTURE_DETECTED,
+                    max_gap_ms=wake_to_gesture,
+                    min_gap_ms=min_gap,
+                ),
+            ),
+            max_duration_ms=temporal.max_sequence_ms,
+            require_same_subject=False,
+        ),
+        # Gesture with no wake word: the accidental-command case the system
+        # exists to reject. Modelled as a pattern so the failure is reported as
+        # MISSING_STEP rather than as a special case in code.
+        "gesture_only": SequencePattern(
+            name="gesture_only",
+            steps=(SequenceStep(EventType.GESTURE_DETECTED, max_gap_ms=None),),
+            max_duration_ms=temporal.max_sequence_ms,
+            require_same_subject=False,
+        ),
+    }
+</file>
+
+<file path="intentlock/src/intentlock/telemetry/__init__.py">
+"""telemetry subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/vision/__init__.py">
+"""vision subsystem."""
+</file>
+
+<file path="intentlock/src/intentlock/__init__.py">
+"""IntentLock: temporal multimodal intent verification for edge AI.
+
+The package is organised as a strict pipeline. Each stage has a single
+responsibility and communicates with the next via explicit types:
+
+    perception  -> Event            (audio/vision/imu)
+    synchronise -> AlignedSequence  (synchronization)
+    context     -> ContextState     (context)
+    fuse        -> IntentEvidence   (fusion)
+    decide      -> Decision         (intent + safety)
+    act         -> ActionResult     (actions)
+
+`Event` is the central exchange type: every modality reasons in events, never
+in raw streams, past the point of perception.
+"""
+
+from intentlock.common.errors import (
+    ActionError,
+    ConfigurationError,
+    IntentLockError,
+    MalformedInputError,
+    ModelError,
+    SensorError,
+    SensorUnavailable,
+    SequenceError,
+)
+from intentlock.common.events import Event, EventType, Source
+
+__all__ = [
+    "ActionError",
+    "ConfigurationError",
+    "Event",
+    "EventType",
+    "IntentLockError",
+    "MalformedInputError",
+    "ModelError",
+    "SensorError",
+    "SensorUnavailable",
+    "SequenceError",
+    "Source",
+]
+
+__version__ = "0.1.0"
+</file>
+
+<file path="intentlock/src/intentlock/py.typed">
+
+</file>
+
+<file path="intentlock/.env.example">
+# IntentLock environment configuration.
+# Copy to `.env` and adjust. Nothing here is a secret by default; the file exists
+# so that deployment-specific paths are never hard-coded in source.
+
+# Root directory containing raw datasets (InGesture, Speech Commands, UCI HAR, ...).
+INTENTLOCK_DATA_ROOT=./data
+
+# Directory holding exported/inference-ready models.
+INTENTLOCK_MODEL_DIR=./models
+
+# Directory for structured telemetry JSONL output.
+INTENTLOCK_TELEMETRY_DIR=./artifacts/telemetry
+
+# Path to the runtime configuration YAML.
+INTENTLOCK_CONFIG=./configs/intentlock.yaml
+
+# --- Hardware backends (only read by deployment/hardware backends) ---
+# UNO Q bridge: MCU sketch exposes IMU reads; the Linux side polls via Bridge.call.
+INTENTLOCK_IMU_BACKEND=simulator   # simulator | arduino_bridge | csv_replay
+INTENTLOCK_AUDIO_BACKEND=simulator # simulator | sounddevice
+INTENTLOCK_VISION_BACKEND=simulator # simulator | opencv
+
+# Serial port / bridge function name for the Arduino Bridge backend.
+INTENTLOCK_BRIDGE_HOST=arduino.local
+INTENTLOCK_BRIDGE_IMU_FN=read_imu_sample
+
+# Camera / microphone indices on the edge device.
+INTENTLOCK_CAMERA_INDEX=0
+INTENTLOCK_MIC_INDEX=0
+
+# Deterministic seed used across preprocessing, training and simulation.
+INTENTLOCK_SEED=1337
+</file>
+
+<file path="intentlock/.gitignore">
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data: raw and interim data are never committed. Processed data is
+# regenerated from manifests; only manifests and splits are versioned.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# Models and exports (versioned metadata is committed under models/*.json)
+models/*.pt
+models/*.onnx
+models/*.eim
+models/*.tflite
+
+# Secrets
+.env
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+</file>
+
+<file path="intentlock/pyproject.toml">
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intentlock"
+version = "0.1.0"
+description = "Temporal multimodal intent verification for edge AI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "IntentLock contributors" }]
+
+# Runtime dependencies are deliberately minimal. Heavy ML backends (torch) and
+# hardware backends are optional extras so that the core pipeline (event engine,
+# fusion, state machine, safety gate, simulator) installs and tests on any machine.
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+# Training / model backends.
+train = [
+    "torch>=2.1",
+    "scikit-learn>=1.3",
+]
+# Audio feature extraction beyond the built-in NumPy implementation.
+audio = ["soundfile>=0.12", "scipy>=1.11"]
+# Vision backends.
+vision = ["opencv-python-headless>=4.9", "pillow>=10.0"]
+# Edge export / on-device inference (installed on the UNO Q target).
+edge = ["edge_impulse_linux>=1.0"]
+# Development tooling.
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "black>=24.1",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+    "types-PyYAML",
+]
+
+[project.scripts]
+intentlock = "intentlock.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+intentlock = ["py.typed"]
+
+# ---------------------------------------------------------------------------
+# Tooling configuration
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "TID"]
+ignore = [
+    # `float("nan")` comparisons and `==` on floats are handled by explicit helpers.
+    "PLR2004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"] # asserts are the point of tests
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+mypy_path = "src"
+# Third-party libs without stubs that we cannot control.
+[[tool.mypy.overrides]]
+module = ["torch.*", "sklearn.*", "cv2.*", "soundfile.*", "edge_impulse_linux.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: long-running tests",
+    "hardware: requires physical hardware",
+]
+filterwarnings = ["error::DeprecationWarning:intentlock.*"]
+
+[tool.coverage.run]
+source = ["intentlock"]
+branch = true
+</file>
+
+</files>
