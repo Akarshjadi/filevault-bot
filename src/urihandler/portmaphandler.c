@@ -75,7 +75,7 @@ esp_err_t portmap_get_handler(httpd_req_t *req)
     char ip_prefix[strlen(defaultIP) - 1];
     strncpy(ip_prefix, defaultIP, strlen(defaultIP) - 1); // Without the last part
     ip_prefix[strlen(defaultIP) - 1] = '\0';
-    char *portmap_page = malloc(portmap_html_size + strlen(ip_prefix));
+    char *portmap_page = malloc(portmap_html_size + strlen(ip_prefix) + 1);
     sprintf(portmap_page, portmap_end_start, ip_prefix);
     ESP_LOGI(TAG, "Sending portmap end part");
 

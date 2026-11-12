@@ -451,15 +451,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "STA disconnected, reason=%d", disconnected->reason);
         ap_connect = false;
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
-        // C-14: bounded retries; AP+UI stay up when uplink not visible
-        if (uplink_visible_at_boot && sta_retry_count < STA_MAX_RETRIES)
+        // C-14: bounded retries with backoff; AP+UI stay up
+        if (sta_retry_count < STA_MAX_RETRIES)
         {
             sta_retry_count++;
+            ESP_LOGI(TAG, "Retry connection to AP (%d/%d)...", sta_retry_count, STA_MAX_RETRIES);
+            vTaskDelay(pdMS_TO_TICKS(1000));
             esp_wifi_connect();
-        }
-        else if (!uplink_visible_at_boot)
-        {
-            ESP_LOGW(TAG, "Uplink %s not found on boot; AP+UI stay up, waiting for user config", "saved-SSID");
         }
         else
         {
@@ -631,7 +629,7 @@ void wifi_init(const char *ssid, const char *passwd, const char *static_ip, cons
             .beacon_interval = 100,
             .pairwise_cipher = WIFI_CIPHER_TYPE_CCMP}};
 
-    strlcpy((char *)ap_config.sta.ssid, ap_ssid, sizeof(ap_config.sta.ssid));
+    strlcpy((char *)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid));
 
     if (strlen(ap_passwd) < 8)
     {
@@ -679,7 +677,7 @@ void wifi_init(const char *ssid, const char *passwd, const char *static_ip, cons
 
     if (strlen(ssid) > 0)
     {
-        // C-14: boot scan — only connect to the saved uplink if it's actually visible
+        // C-14: boot scan — check visibility and RSSI
         ESP_LOGI(TAG, "Boot scan for uplink \"%s\" ...", ssid);
         uplink_visible_at_boot = false;
         esp_wifi_scan_stop();
@@ -706,10 +704,11 @@ void wifi_init(const char *ssid, const char *passwd, const char *static_ip, cons
         }
         if (!uplink_visible_at_boot)
         {
-            ESP_LOGW(TAG, "Uplink \"%s\" not visible; staying on AP+UI until configured", ssid);
+            ESP_LOGW(TAG, "Uplink \"%s\" not visible in initial scan; will still attempt to connect", ssid);
         }
         ESP_LOGI(TAG, "wifi_init_apsta finished.");
         ESP_LOGI(TAG, "connect to ap SSID: %s Password: %s", ssid, passwd);
+        esp_wifi_connect();
     }
     else
     {

@@ -41,7 +41,7 @@ esp_err_t scan_download_get_handler(httpd_req_t *req)
     extern const char scan_end[] asm("_binary_scan_html_end");
     const size_t scan_html_size = (scan_end - scan_start);
 
-    char *scan_page = malloc(scan_html_size + strlen(defaultIP));
+    char *scan_page = malloc(scan_html_size + strlen(defaultIP) + 1);
 
     sprintf(scan_page, scan_start, defaultIP);
 

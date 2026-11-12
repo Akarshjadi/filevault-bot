@@ -57,7 +57,7 @@ esp_err_t advanced_download_get_handler(httpd_req_t *req)
     {
         txPower = 80; // default
     }
-    char *lowSelected, *mediumSelected, *highSelected = NULL;
+    char *lowSelected = NULL, *mediumSelected = NULL, *highSelected = NULL;
     if (txPower < 34)
     { // low
         lowSelected = "selected";
@@ -79,7 +79,7 @@ esp_err_t advanced_download_get_handler(httpd_req_t *req)
 
     int32_t bandwith = 0;
     get_config_param_int("lower_bandwith", &bandwith);
-    char *bwLow, *bwHigh = NULL;
+    char *bwLow = NULL, *bwHigh = NULL;
     if (bandwith == 1)
     {
         bwLow = "selected";
@@ -106,13 +106,22 @@ esp_err_t advanced_download_get_handler(httpd_req_t *req)
     {
         natCB = "checked";
     }
+    bool dnsAllocated = false;
     esp_netif_dns_info_t dns;
     esp_netif_t *wifiSTA = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (esp_netif_get_dns_info(wifiSTA, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK)
     {
         currentDNS = malloc(16);
-        sprintf(currentDNS, IPSTR, IP2STR(&(dns.ip.u_addr.ip4)));
-        ESP_LOGI(TAG, "Current DNS is: %s", currentDNS);
+        if (currentDNS != NULL)
+        {
+            dnsAllocated = true;
+            sprintf(currentDNS, IPSTR, IP2STR(&(dns.ip.u_addr.ip4)));
+            ESP_LOGI(TAG, "Current DNS is: %s", currentDNS);
+        }
+        else
+        {
+            currentDNS = "";
+        }
     }
 
     char *customDNS = NULL;
@@ -199,7 +208,10 @@ esp_err_t advanced_download_get_handler(httpd_req_t *req)
 
     free(advanced_page);
     free(subMac);
-    free(currentDNS);
+    if (dnsAllocated)
+    {
+        free(currentDNS);
+    }
 
     return ret;
 }

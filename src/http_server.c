@@ -191,7 +191,16 @@ httpd_handle_t start_webserver(void)
 
     // GOD-TWEAK: serve UI on 8080 so OS captive-portal probes (port 80)
     // see nothing and never trigger the "no internet" sheet.
-    config.server_port = 8080;
+    int32_t custom_port = 8080;
+    get_config_param_int("http_port", &custom_port);
+    if (custom_port > 0 && custom_port <= 65535)
+    {
+        config.server_port = (uint16_t)custom_port;
+    }
+    else
+    {
+        config.server_port = 8080;
+    }
 
     // Start the httpd server
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);

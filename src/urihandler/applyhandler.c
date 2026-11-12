@@ -164,7 +164,7 @@ char *getRedirectUrl(httpd_req_t *req)
         host = ip;
     }
 
-    char *str = malloc(strlen("http://") + buf_len);
+    char *str = malloc(strlen("http://") + buf_len + 16);
     if (!str) { free(host); return NULL; }
     strcpy(str, "http://");
     if (strcmp(host, DEFAULT_AP_IP_CLASS_A) == 0 || strcmp(host, DEFAULT_AP_IP_CLASS_B) == 0 || strcmp(host, DEFAULT_AP_IP_CLASS_C) == 0)
@@ -348,9 +348,11 @@ void applyAdvancedConfig(char *buf)
     }
 
     readUrlParameterIntoBuffer(buf, "octet", param, contentLength);
-    int octet = atoi(param);
-    if (strlen(param) > 0 && octet >= 0 && octet <= 255)
+    char *endptr = NULL;
+    long octet_val = strtol(param, &endptr, 10);
+    if (strlen(param) > 0 && endptr != param && *endptr == '\0' && octet_val >= 0 && octet_val <= 255)
     {
+        int octet = (int)octet_val;
         ESP_LOGI(TAG, "Set third octet to: %d", octet);
         ESP_ERROR_CHECK(nvs_set_i32(nvs, "octet", octet));
     }

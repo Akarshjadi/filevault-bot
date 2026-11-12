@@ -122,10 +122,18 @@ esp_err_t index_get_handler(httpd_req_t *req)
 
     get_config_param_blob("cer", &cert, &len);
     char *cer = NULL;
-    if (len > 0)
+    if (len > 0 && cert != NULL)
     {
-        cer = (char *)malloc(len + 1 * sizeof(char));
-        strncpy(cer, cert, len + 1);
+        cer = (char *)malloc(len + 1);
+        if (cer != NULL)
+        {
+            memcpy(cer, cert, len);
+            cer[len] = '\0';
+        }
+    }
+    if (cert != NULL)
+    {
+        free(cert);
     }
     if ((sta_identity != NULL && strlen(sta_identity) != 0) || (sta_user != NULL && strlen(sta_user) != 0))
     {

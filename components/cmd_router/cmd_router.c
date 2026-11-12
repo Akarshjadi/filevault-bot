@@ -55,20 +55,22 @@ esp_err_t get_config_param_str(char *name, char **param)
         if ((err = nvs_get_str(nvs, name, NULL, &len)) == ESP_OK)
         {
             *param = (char *)malloc(len);
-            err = nvs_get_str(nvs, name, *param, &len);
-            ESP_LOGI(TAG, "%s %s", name, *param);
-        }
-        else
-        {
-            return err;
+            if (*param != NULL)
+            {
+                err = nvs_get_str(nvs, name, *param, &len);
+                if (err == ESP_OK)
+                {
+                    ESP_LOGI(TAG, "%s %s", name, *param);
+                }
+            }
+            else
+            {
+                err = ESP_ERR_NO_MEM;
+            }
         }
         nvs_close(nvs);
     }
-    else
-    {
-        return err;
-    }
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t get_config_param_blob(char *name, char **param, size_t *blob_len)
@@ -82,21 +84,19 @@ esp_err_t get_config_param_blob(char *name, char **param, size_t *blob_len)
         if ((err = nvs_get_blob(nvs, name, NULL, &len)) == ESP_OK)
         {
             *param = (char *)malloc(len);
-            *blob_len = len;
-
-            err = nvs_get_blob(nvs, name, *param, &len);
-        }
-        else
-        {
-            return err;
+            if (*param != NULL)
+            {
+                *blob_len = len;
+                err = nvs_get_blob(nvs, name, *param, &len);
+            }
+            else
+            {
+                err = ESP_ERR_NO_MEM;
+            }
         }
         nvs_close(nvs);
     }
-    else
-    {
-        return err;
-    }
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t get_config_param_blob2(char *name, uint8_t *blob, size_t blob_len)
